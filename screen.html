@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>量化选股 · 缠论 × 威科夫 × 多因子</title>
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#c62828">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="股票看盘">
+<link rel="stylesheet" href="styles.css">
+<script src="sharelink.js"></script>
+<link rel="stylesheet" href="screen.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">盘</span>
+    <div>
+      <h1>量化选股</h1>
+      <span class="sub" id="clock">加载中…</span>
+    </div>
+  </div>
+  <div class="top-actions">
+    <a class="btn ghost" href="index.html">行情首页</a>
+    <a class="btn ghost" href="analyze.html">个股分析</a>
+    <button class="btn primary" id="runBtn">开始选股</button>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <div class="page-head">
+    <div>
+      <div class="page-title">
+        盘中实时选股
+        <span class="mode-pill" id="modePill">—</span>
+      </div>
+      <div class="page-desc">
+        月线定方向、周线定结构、日线定买点、30分钟定时机，叠加威科夫量价事件与多因子排序。
+        每一只入榜标的都给出支撑压力、买入区间、止损与目标，并附可复算的证据链。
+      </div>
+    </div>
+    <div class="head-ctrl">
+      <span class="hint" id="lastRun">尚未运行</span>
+      <button class="btn ghost" id="runBtn2">重新计算</button>
+    </div>
+  </div>
+
+  <div class="progress-wrap" id="progressWrap">
+    <div class="progress-bar"><i id="progressBar"></i></div>
+    <div class="progress-text">
+      <span id="progressMsg">准备中…</span>
+      <span id="progressPct">0%</span>
+    </div>
+  </div>
+
+  <section class="gate" id="gate">
+    <div class="gate-head">
+      <span class="gate-title">市场环境闸门</span>
+      <span class="gate-tag" id="gateTag">待评估</span>
+    </div>
+    <div class="gate-body" id="gateBody">选股前先判断大盘环境，环境不配合时只出观察不出买入。</div>
+    <div class="gate-metrics" id="gateMetrics"></div>
+  </section>
+
+  <section class="block src-block" id="srcBlock">
+    <div class="sec-head">
+      <h2><span class="dot" id="srcDot"></span>数据源与交叉校验</h2>
+      <span class="hint" id="srcHint">等待计算</span>
+    </div>
+    <div class="src-grid" id="srcGrid">
+      <div class="empty-state small">运行一次选股后，这里会显示各路行情源的实际可用性与互相比对结果。</div>
+    </div>
+    <div class="cross-list" id="crossList"></div>
+  </section>
+
+  <div class="track-bar" id="trackBar" style="display:none">
+    <div class="track-head">
+      <span class="track-title" id="trackTitle">上一交易日入选标的表现</span>
+      <span class="hint" id="trackHint"></span>
+    </div>
+    <div class="track-items" id="trackItems"></div>
+  </div>
+
+  <section class="block">
+    <div class="sec-head">
+      <h2><span class="dot live"></span>可买候选</h2>
+      <span class="hint" id="pickHint">等待计算</span>
+    </div>
+    <div class="basis-bar" id="basisBar" style="display:none"></div>
+    <div id="pickArea">
+      <div class="empty-state">
+        <b>还没有结果</b>
+        点击右上角「开始选股」。盘中重算约 15–25 秒，会依次完成全市场快照、量价粗筛、多周期结构精算。
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="watchBlock" style="display:none">
+    <div class="sec-head">
+      <h2>观察名单</h2>
+      <span class="hint" id="watchHint"></span>
+    </div>
+    <div class="watch-grid" id="watchGrid"></div>
+  </section>
+
+  <section class="block" id="btBlock" style="display:none">
+    <div class="sec-head">
+      <h2>模型回测</h2>
+      <span class="hint" id="btHint"></span>
+    </div>
+    <div class="bt-panel">
+      <div class="bt-tabs">
+        <button class="bt-tab active" data-set="all">全部信号</button>
+        <button class="bt-tab" data-set="trend">叠加月周过滤</button>
+      </div>
+      <div class="bt-grid" id="btGrid"></div>
+      <div class="bt-year" id="btYear"></div>
+      <div class="bt-note" id="btNote" style="margin-top:14px"></div>
+    </div>
+  </section>
+
+  <details class="caliber">
+    <summary></summary>
+    <div class="caliber-body">
+      <p><b>数据源与交叉校验：</b>页面同时接入<b>东方财富、新浪财经、腾讯行情、同花顺</b>四家公开行情，互相比对后才会出榜。全市场列表以东财与新浪并行获取（两家都成功时逐只比价，一致率低于 85% 会在页面上标红）；候选池 60 只用腾讯与东财各自再取一次逐只比价；最终入榜标的再用同花顺复核一次——同花顺返回带精确时间戳，可以算出快照时差并按差值动态放宽容差。<b>通达信</b>走的是私有 TCP 协议，浏览器无法直连，因此只作为上线前的离线校验基准，不参与页面实时取数。</p>
+      <p><b>为什么不要求价格完全相同：</b>不同源的快照时刻本就不同。实测同一分钟内茅台分别为 1301.98（腾讯/新浪）与 1300.13（同花顺），差 0.14%，这是行情推送延迟而非数据错误。所以判定标准是「偏离是否超出按时间差放大的容差」，超出才标红。任何一只票的成交价如果被两家以上源否定，就不该拿它做交易决策。</p>
+      <p><b>价格口径分三态：</b><b>盘中</b>用实时价，最后一根日K未完成，成交量按交易进度折算全天预估，依赖它的判定标记「未确认」；<b>已收盘</b>用今日收盘价，K线完整，这批结果可直接用于次日开盘的委托规划；<b>盘前 / 休市</b>用上一交易日收盘，快照用大市值标的的日线重建。三者不会混淆——页面顶部与榜单上方都会写明当前用的是哪一种。</p>
+      <p><b>复权口径：</b>结构计算统一使用<b>后复权</b>K线。前复权在除权日会产生跳空，凭空造出假笔与假中枢（同花顺那条线就是前复权，早期数据甚至出现负价，所以只用来核对最近价格、绝不参与结构计算）；页面上展示的中枢、支撑压力、买卖价已按复权因子换算回今日真实价，可直接对照盘面。</p>
+      <p><b>结构层级：</b>月线 → 周线 → 日线 → 30 分钟四级串联。月线笔方向决定能不能做，周线结构决定做多大，日线买点决定在哪买，30 分钟用于入场时机。本引擎做「笔 → 中枢」两级，不做线段与走势类型递归——那部分参数敏感且对选股无增量贡献。</p>
+      <p><b>送样口径：</b>威科夫事件（Spring / Upthrust / No Demand / No Supply / Climax / 放量滞涨 / 量价背离）全部为阈值判定，在最近 5 根K线窗口内检测并按距今天数衰减。</p>
+      <p><b>筛选口径：</b>全市场约 5900 只不可能逐只拉多周期K线（约 2.4 万次请求），因此先用量价快照粗筛到 60 只候选（强势组 45 + 缩量回踩组 15），再逐只精算。候选池不覆盖全市场，会漏掉部分冷门标的。</p>
+      <p><b>入榜条件：</b>综合分 ≥ 45、盈亏比 ≥ 1.2、日线结构未破坏、四级结构至少满足两级。四个条件任一不满足只进观察名单。<b>高分不等于可买</b>：观察名单里常有 70~85 分的票卡在盈亏比上，那是上方压力太近、空间不够赔率，不是评分算错了。</p>
+      <p><b>买卖价口径：</b>买入区间宽度上限 3%，上沿不追过现价 1.5%、也不超过最近压力；止损取「跌破买点结构」与「跌破日线中枢下沿」中更近的一个，且距离被限制在 1.1 倍 ATR 至 12% 之间；目标位为最近压力，上方无压力时按中枢高度投影，上限取 min(最近压力, 6×ATR, +15%)。盈亏比 = (目标 − 区间中值) / (区间中值 − 止损)。</p>
+      <p><b>回测口径：</b>信号确认后<b>次日开盘</b>成交（绝不用信号日收盘价，那是未来函数），且入场价距买点超过 4% 视为追高、直接放弃。费用按往返 0.2% 计（佣金 + 印花 + 滑点），止损为信号笔低点下方 1.5%，止盈 2R，最长持有 20 个交易日。一字板按买不进跳过。</p>
+      <p><b>样本局限：</b>回测标的仅限本次入榜个股，不是全市场样本；区间约 3 年，含一轮下跌与一轮反弹。参数未做样本外调优，所有统计均为<b>样本内</b>结果，不代表未来收益。单只标的信号数常在 5–10 笔，统计不具显著性，请以汇总结果为准。</p>
+      <p><b>免责：</b>本页所有内容由公开行情按固定规则计算得出，仅用于研究与复盘，不构成任何投资建议。市场有风险，决策请自行判断。</p>
+    </div>
+  </details>
+
+  <footer class="foot">
+    <p>行情与K线来源：东方财富、新浪财经、腾讯行情、同花顺，四源交叉校验后出榜（通达信为离线校验基准）。结构计算与回测全部在本地浏览器完成，数据不上传。</p>
+    <p class="risk">风险提示：量化信号存在失效与滞后，历史回测不代表未来表现。本页不构成投资建议，投资需谨慎。</p>
+  </footer>
+</main>
+
+<script src="feeds.js"></script>
+<script src="chan.js"></script>
+<script src="wyckoff.js"></script>
+<script src="screener.js"></script>
+<script src="backtest.js"></script>
+<script src="screen.js"></script>
+</body>
+</html>

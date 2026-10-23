@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>股票看盘 · A股行情与板块信号</title>
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#c62828">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="股票看盘">
+<link rel="stylesheet" href="styles.css">
+<script src="sharelink.js"></script>
+<script>
+// SDK 多源加载：任一 CDN 可用即可，避免单一 CDN 不可达导致整站失效
+(function(){
+  var SRC=[
+    'sdk.js',
+    'https://unpkg.com/@tencent-ai/workbuddy-cloud-sdk@0.1.3-dev.c090db7.202610050023/lib/index.global.js',
+    'https://cdn.jsdelivr.net/npm/@tencent-ai/workbuddy-cloud-sdk@0.1.3-dev.c090db7.202610050023/lib/index.global.js'
+  ];
+  var i=0;
+  function load(){
+    if(i>=SRC.length){
+      window.__SDK_FAILED=true;
+      document.dispatchEvent(new Event('wb-sdk-failed'));
+      return;
+    }
+    var s=document.createElement('script');
+    s.src=SRC[i++];
+    s.onload=function(){ window.__SDK_READY=true; };
+    s.onerror=function(){ s.remove(); load(); };
+    document.head.appendChild(s);
+  }
+  load();
+})();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">盘</span>
+    <div>
+      <h1>股票看盘</h1>
+      <span class="sub" id="clock">加载中…</span>
+    </div>
+  </div>
+  <div class="top-actions">
+    <a class="btn ghost" href="screen.html">量化选股</a>
+    <a class="btn primary" href="analyze.html">个股分析</a>
+    <button class="btn ghost" id="refreshBtn">刷新数据</button>
+    <button class="btn ghost" id="watchBtn">我的自选</button>
+    <button class="btn primary" id="loginBtn">登录</button>
+  </div>
+</header>
+
+<div class="marquee-wrap"><div class="marquee" id="marquee"></div></div>
+
+<div class="search-wrap">
+  <form class="search-box" action="analyze.html" method="get" role="search">
+    <input id="homeCode" name="code" placeholder="输入股票代码或名称：600519 / sz300750 / 贵州茅台" autocomplete="off" aria-label="股票代码或名称">
+    <button class="btn primary" type="submit">个股分析</button>
+  </form>
+</div>
+
+<main class="wrap">
+
+  <!-- 关键信号 -->
+  <section class="signals" id="signals">
+    <div class="sec-head">
+      <h2><span class="dot live"></span>关键信号与操作建议</h2>
+      <span class="hint" id="signalHint"></span>
+    </div>
+    <div class="signal-grid" id="signalGrid"></div>
+  </section>
+
+  <!-- 主要市场指数 -->
+  <section class="block">
+    <div class="sec-head"><h2>当日主要市场指数</h2><span class="hint" id="indexHint"></span></div>
+    <div class="index-row" id="indexRow"></div>
+  </section>
+
+  <div class="two-col">
+    <!-- 领涨板块 -->
+    <section class="block">
+      <div class="sec-head"><h2><span class="up">▲</span> 领涨板块 TOP</h2></div>
+      <div class="rank-list" id="gainers"></div>
+    </section>
+    <!-- 领跌板块 -->
+    <section class="block">
+      <div class="sec-head"><h2><span class="down">▼</span> 领跌板块 TOP</h2></div>
+      <div class="rank-list" id="losers"></div>
+    </section>
+  </div>
+
+  <!-- 全部板块指数 -->
+  <section class="block">
+    <div class="sec-head">
+      <h2>A股各板块指数</h2>
+      <span class="hint" id="sectorHint">实时行情</span>
+      <div class="tabs" id="sectorTabs">
+        <button class="tab active" data-type="行业">行业板块</button>
+        <button class="tab" data-type="概念">概念板块</button>
+      </div>
+    </div>
+    <div class="table-scroll tall">
+      <table class="sector-table">
+        <thead><tr>
+          <th>板块</th><th>类型</th><th class="num">涨跌幅</th>
+          <th class="num">成交额(亿)</th><th class="num">换手率</th><th class="num">振幅</th>
+        </tr></thead>
+        <tbody id="sectorBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 板块异动 -->
+  <section class="block">
+    <div class="sec-head"><h2>板块异动监控</h2><span class="hint" id="anomalyHint"></span></div>
+    <div class="anomaly-grid" id="anomalyGrid"></div>
+  </section>
+
+  <!-- 财经资讯 -->
+  <section class="block">
+    <div class="sec-head">
+      <h2>最新重要财经资讯与上市公司大事</h2>
+      <span class="hint" id="newsHint"></span>
+      <div class="tabs" id="newsTabs">
+        <button class="tab active" data-cat="全部">全部</button>
+        <button class="tab" data-cat="宏观政策">宏观政策</button>
+        <button class="tab" data-cat="上市公司">上市公司大事</button>
+        <button class="tab" data-cat="行业动态">行业动态</button>
+        <button class="tab" data-cat="海外市场">海外市场</button>
+      </div>
+    </div>
+    <ul class="news-list" id="newsList"></ul>
+  </section>
+
+  <footer class="foot">
+    <p>指数、板块、个股行情（腾讯行情接口）、市场宽度与涨停梯队（东方财富行情接口）、财经资讯（同花顺资讯接口）以及关键信号、板块异动（本地实时推导）均为实时数据，交易时段每 60 秒自动刷新</p>
+    <p class="risk">风险提示：本网站提供的行情与信号分析仅供参考，不构成任何投资建议。市场有风险，投资需谨慎。</p>
+  </footer>
+</main>
+
+<!-- 登录面板 -->
+<div class="modal" id="loginModal">
+  <div class="modal-box">
+    <button class="close" id="loginClose">×</button>
+    <h3>登录 股票看盘</h3>
+    <div class="login-tabs">
+      <button class="ltab active" data-method="password">密码登录</button>
+      <button class="ltab" data-method="otp">验证码登录</button>
+      <button class="ltab" data-method="wechat">微信登录</button>
+    </div>
+
+    <div class="lpane" data-pane="password">
+      <input type="email" id="pEmail" placeholder="邮箱" autocomplete="email">
+      <input type="password" id="pPass" placeholder="密码" autocomplete="current-password">
+      <button class="btn primary wide" id="pLoginBtn">登录 / 注册</button>
+      <p class="tip">新账号将自动注册。首次注册需先使用「验证码登录」完成邮箱验证并设置密码。</p>
+    </div>
+
+    <div class="lpane hidden" data-pane="otp">
+      <input type="email" id="oEmail" placeholder="邮箱">
+      <div class="code-row">
+        <input type="text" id="oCode" placeholder="6 位验证码" maxlength="6" inputmode="numeric">
+        <button class="btn ghost" id="oSendBtn" type="button">获取验证码</button>
+      </div>
+      <input type="password" id="oPass" placeholder="新账号请设置密码">
+      <button class="btn primary wide" id="oSubmitBtn">登录 / 注册</button>
+      <p class="tip" id="oTip"></p>
+    </div>
+
+    <div class="lpane hidden" data-pane="wechat">
+      <button class="btn primary wide" id="wxBtn">使用微信登录</button>
+      <p class="tip">微信授权登录将在发布域名下完成，用于同步你的自选股到云端。</p>
+    </div>
+
+    <p class="err" id="loginErr"></p>
+  </div>
+</div>
+
+<!-- 自选面板 -->
+<div class="modal" id="watchModal">
+  <div class="modal-box">
+    <button class="close" id="watchClose">×</button>
+    <h3>我的自选股</h3>
+    <p class="tip" id="watchTip"></p>
+    <div class="add-wrap">
+      <div class="code-row">
+        <input type="text" id="wCode" placeholder="代码或名称，如 600519" enterkeyhint="done">
+        <input type="text" id="wName" placeholder="名称可留空" enterkeyhint="done">
+      </div>
+      <div class="msug hidden" id="wSug"></div>
+    </div>
+    <button class="btn primary wide" id="wAddBtn">添加到自选</button>
+    <p class="watch-count" id="watchCount"></p>
+    <ul class="watch-list" id="watchList"></ul>
+  </div>
+</div>
+
+<script src="live.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

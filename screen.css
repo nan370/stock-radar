@@ -1,0 +1,281 @@
+/* 量化选股页专属样式，沿用 styles.css 的设计变量与顶栏风格 */
+
+.page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+.page-title{font-size:20px;font-weight:600;display:flex;align-items:center;gap:9px}
+.page-desc{font-size:12.5px;color:var(--sub);margin-top:5px;max-width:720px;line-height:1.7}
+.head-ctrl{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+
+.mode-pill{
+  font-size:12px;padding:4px 11px;border-radius:20px;background:#eef1f5;color:#495057;
+  border:1px solid var(--line);white-space:nowrap;
+}
+.mode-pill.live{background:#fff5f5;color:#c62828;border-color:#ffc9c9}
+.mode-pill.closed{background:#f1f3f5;color:#495057}
+
+/* 进度 */
+.progress-wrap{display:none;margin-bottom:16px}
+.progress-wrap.on{display:block}
+.progress-bar{height:4px;background:#e9ecef;border-radius:3px;overflow:hidden}
+.progress-bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s ease}
+.progress-text{font-size:12px;color:var(--sub);margin-top:6px;display:flex;justify-content:space-between}
+
+/* 环境闸门 */
+.gate{
+  background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  padding:16px 18px;margin-bottom:22px;box-shadow:var(--shadow);
+  border-left:4px solid #adb5bd;
+}
+.gate.ok{border-left-color:var(--up)}
+.gate.warn{border-left-color:#f59f00}
+.gate.bad{border-left-color:var(--down)}
+.gate-head{display:flex;align-items:center;gap:9px;margin-bottom:8px}
+.gate-title{font-size:14.5px;font-weight:600}
+.gate-tag{font-size:11.5px;padding:2px 8px;border-radius:4px;background:#f1f3f5;color:#495057}
+.gate-tag.ok{background:#fff5f5;color:#c62828}
+.gate-tag.warn{background:#fff9db;color:#a16500}
+.gate-tag.bad{background:#ebfbee;color:#2b8a3e}
+.gate-body{font-size:13px;color:#343a40;line-height:1.75}
+.gate-metrics{display:flex;gap:20px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--sub)}
+.gate-metrics b{color:var(--text);font-weight:600}
+
+/* 候选表 */
+.cand-wrap{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow)}
+/* 表格列多（9 列），窄屏一定放不下。没有这层滚动容器时，
+ * 外层 cand-wrap 的 overflow:hidden 会把右侧「目标 / 盈亏比 / 箭头」直接裁掉，
+ * 用户看不到也没法划——这是静默丢信息，比横向滚动难查得多。 */
+.table-scroll{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.table-scroll::-webkit-scrollbar{height:6px}
+.table-scroll::-webkit-scrollbar-thumb{background:#dee2e6;border-radius:3px}
+.cand-table{width:100%;border-collapse:collapse;font-size:13px}
+.cand-table th{
+  text-align:left;font-weight:500;color:var(--sub);font-size:12px;
+  padding:11px 12px;background:#fafbfc;border-bottom:1px solid var(--line);white-space:nowrap;
+}
+.cand-table td{padding:12px;border-bottom:1px solid #f1f3f5;vertical-align:middle}
+.cand-table tbody tr{cursor:pointer;transition:background .12s}
+.cand-table tbody tr:hover{background:#fafbfc}
+.cand-table tbody tr.open{background:#fff8f8}
+.cand-table .num{text-align:right;font-variant-numeric:tabular-nums}
+.cand-name{font-weight:600;font-size:13.5px}
+.cand-code{font-size:11.5px;color:var(--sub);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.cand-pct{font-size:12px}
+.pos{color:var(--up)}
+.neg{color:var(--down)}
+
+.score-cell{display:flex;align-items:center;gap:7px}
+.score-num{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums;min-width:26px}
+.grade{
+  font-size:11px;font-weight:600;padding:1px 6px;border-radius:4px;line-height:1.6;
+}
+.grade.A{background:#fff5f5;color:#c92a2a;border:1px solid #ffc9c9}
+.grade.B{background:#fff4e6;color:#d9480f;border:1px solid #ffd8a8}
+.grade.C{background:#f1f3f5;color:#495057;border:1px solid #dee2e6}
+.grade.D{background:#f8f9fa;color:#868e96;border:1px solid #e9ecef}
+
+.rng{font-variant-numeric:tabular-nums;font-weight:500;white-space:nowrap}
+.rng .sep{color:#ced4da;margin:0 2px}
+.stop-v{color:var(--down);font-variant-numeric:tabular-nums}
+.tgt-v{color:var(--up);font-variant-numeric:tabular-nums}
+.rr-v{font-weight:600;font-variant-numeric:tabular-nums}
+.rr-v.good{color:var(--up)}
+.rr-v.bad{color:var(--down)}
+
+.trend-cell{font-size:12px;line-height:1.5}
+.trend-cell .t1{font-weight:500}
+.trend-cell .t2{color:var(--sub);font-size:11px}
+
+.warn-chip{
+  display:inline-block;font-size:10.5px;padding:1px 5px;border-radius:3px;
+  background:#fff9db;color:#a16500;border:1px solid #ffe8a1;margin-left:4px;white-space:nowrap;
+}
+
+/* 证据展开 */
+.detail-row>td{padding:0!important;background:#fcfcfd;border-bottom:1px solid var(--line)}
+.detail-box{padding:16px 18px 18px;display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media(max-width:860px){.detail-box{grid-template-columns:1fr}}
+.detail-col h4{font-size:12.5px;font-weight:600;color:var(--sub);margin-bottom:9px;letter-spacing:.3px}
+.detail-col h4 .sm{font-weight:400;color:#adb5bd;margin-left:5px}
+.ev{display:flex;gap:8px;font-size:12.5px;line-height:1.65;padding:4px 0;border-bottom:1px dashed #f1f3f5}
+.ev:last-child{border-bottom:none}
+.ev .k{color:var(--sub);min-width:56px;flex-shrink:0}
+.ev .v{font-weight:600;min-width:42px;text-align:right;flex-shrink:0;font-variant-numeric:tabular-nums}
+.ev .v.p{color:var(--up)}
+.ev .v.n{color:var(--down)}
+.ev .t{color:#343a40;flex:1;min-width:0;word-break:break-word}
+
+.plan-line{display:flex;align-items:baseline;gap:8px;font-size:12.5px;padding:5px 0}
+.plan-line .lb{color:var(--sub);min-width:64px;flex-shrink:0}
+.plan-line .vl{font-weight:600;font-variant-numeric:tabular-nums;flex-shrink:0}
+.plan-line .note{font-size:11.5px;color:#adb5bd;flex:1;min-width:0;text-align:right;line-height:1.45}
+
+.lv-row{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:5px 0}
+.lv-name{min-width:46px;color:var(--sub)}
+.lv-dir{font-weight:600;min-width:38px}
+.lv-struct{color:#343a40;flex:1}
+
+.links{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}
+.link-a{font-size:12px;color:var(--accent);text-decoration:none;border-bottom:1px dotted #e0b4b4}
+.link-a:hover{border-bottom-style:solid}
+
+/* 观察名单 */
+.watch-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:12px}
+.watch-card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:13px 14px;cursor:pointer;transition:border-color .15s}
+.watch-card:hover{border-color:#d0d4da}
+.wc-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:7px}
+.wc-name{font-weight:600;font-size:13.5px}
+.wc-score{font-size:15px;font-weight:600;color:#495057}
+.wc-line{font-size:12px;color:var(--sub);line-height:1.6}
+.wc-why{font-size:11.5px;color:#a16500;margin-top:6px;line-height:1.5}
+
+/* 回测 */
+.bt-panel{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow)}
+.bt-tabs{display:flex;gap:8px;margin-bottom:16px}
+.bt-tab{font-size:12.5px;padding:6px 14px;border-radius:7px;border:1px solid var(--line);background:#fff;color:#495057}
+.bt-tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.bt-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px}
+.bt-stat{background:#fafbfc;border:1px solid #f1f3f5;border-radius:9px;padding:12px 14px}
+.bt-stat .k{font-size:11.5px;color:var(--sub);margin-bottom:4px}
+.bt-stat .v{font-size:19px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.3}
+.bt-stat .n{font-size:11px;color:#adb5bd;margin-top:2px}
+.bt-note{font-size:12px;color:var(--sub);line-height:1.8;background:#fafbfc;border-radius:8px;padding:12px 14px;border-left:3px solid #dee2e6}
+.bt-year{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+.bt-year .yc{font-size:11.5px;padding:5px 10px;border-radius:6px;background:#f8f9fa;border:1px solid #f1f3f5}
+.bt-year .yc b{font-weight:600}
+
+/* 空态 */
+.empty-state{
+  text-align:center;padding:38px 20px;color:var(--sub);font-size:13px;
+  background:var(--card);border:1px dashed var(--line);border-radius:var(--radius);
+}
+.empty-state b{display:block;font-size:14px;color:var(--text);margin-bottom:6px;font-weight:600}
+
+/* 口径说明 */
+details.caliber{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:0;margin-top:22px}
+details.caliber summary{padding:13px 18px;cursor:pointer;font-size:13px;font-weight:500;color:#495057;list-style:none}
+details.caliber summary::-webkit-details-marker{display:none}
+details.caliber summary::before{content:"口径与参数说明";}
+details.caliber[open] summary{border-bottom:1px solid var(--line)}
+.caliber-body{padding:14px 18px 18px;font-size:12.5px;color:#495057;line-height:1.9}
+.caliber-body b{color:var(--text)}
+.caliber-body code{background:#f1f3f5;padding:1px 5px;border-radius:3px;font-size:11.5px;font-family:ui-monospace,Menlo,monospace}
+
+/* 昨日追踪 */
+.track-bar{
+  background:#fff;border:1px solid var(--line);border-radius:var(--radius);
+  padding:13px 16px;margin-bottom:22px;font-size:12.5px;box-shadow:var(--shadow);
+}
+.track-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px}
+.track-title{font-weight:600;font-size:13px}
+.track-items{display:flex;gap:8px;flex-wrap:wrap}
+.track-chip{padding:4px 9px;border-radius:6px;background:#f8f9fa;border:1px solid #f1f3f5;font-size:11.5px;font-variant-numeric:tabular-nums}
+.track-chip b{font-weight:600}
+
+/* 数据基准提示条：说明这份榜单是盘中实时还是上一交易日收盘 */
+.basis-bar{
+  font-size:12.5px;line-height:1.75;padding:10px 14px;border-radius:9px;
+  margin:0 0 12px;border:1px solid transparent;
+}
+.basis-bar b{font-weight:600;margin-right:6px}
+.basis-bar.ok{background:#f1f8f3;border-color:#d3ecdb;color:#2b6a41}
+.basis-bar.ok b{color:#1d5230}
+.basis-bar.warn{background:#fdf8ec;border-color:#f3e3bd;color:#8a6a1f}
+.basis-bar.warn b{color:#6d5213}
+.basis-bar.bad{background:#fdf1f0;border-color:#f5d6d3;color:#9c3730}
+.basis-bar.bad b{color:#8a2820}
+.basis-bar.live{background:#fff8f0;border-color:#f7e2c8;color:#8a5a1f}
+.basis-bar.live b{color:#6d4513}
+.basis-src{display:inline-block;margin-left:8px;padding:1px 7px;border-radius:5px;
+  background:rgba(0,0,0,.05);font-size:11px;color:inherit;opacity:.85}
+
+/* ---------------- 数据源与交叉校验 ---------------- */
+.src-block .sec-head h2{display:flex;align-items:center;gap:7px}
+.dot.ok{background:#2f9e44;animation:none}
+.dot.warn{background:#f59f00;animation:none}
+
+.src-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:10px;margin-bottom:14px}
+.src-card{
+  border:1px solid var(--line);border-radius:9px;padding:10px 12px;background:#fff;
+  border-left:3px solid #ced4da;
+}
+.src-card.ok{border-left-color:#2f9e44;background:#fbfefc}
+.src-card.bad{border-left-color:#e03131;background:#fffafa}
+.src-card.off{border-left-color:#adb5bd;background:#fafbfc}
+.src-card.idle{border-left-color:#dee2e6}
+.sc-top{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:3px}
+.sc-name{font-weight:600;font-size:13px}
+.sc-state{font-size:11px;padding:1px 7px;border-radius:20px;background:#f1f3f5;color:#868e96;white-space:nowrap}
+.src-card.ok .sc-state{background:#e7f6ec;color:#2b7a42}
+.src-card.bad .sc-state{background:#fdecec;color:#c92a2a}
+.src-card.off .sc-state{background:#f1f3f5;color:#868e96}
+.sc-role{font-size:11.5px;color:var(--sub);margin-bottom:4px}
+.sc-meta{font-size:11px;color:#adb5bd;font-variant-numeric:tabular-nums}
+.sc-err{font-size:10.5px;color:#c92a2a;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.cross-list{display:flex;flex-direction:column;gap:1px;border-radius:8px;overflow:hidden;border:1px solid var(--line)}
+.cross-row{
+  display:grid;grid-template-columns:104px 1fr 62px 62px 1.4fr;gap:8px;align-items:center;
+  padding:8px 12px;font-size:12px;background:#fff;border-left:3px solid transparent;
+}
+.cross-row:nth-child(even){background:#fcfcfd}
+.cross-row.ok{border-left-color:#2f9e44}
+.cross-row.warn{border-left-color:#f59f00}
+.cross-row.bad{border-left-color:#e03131}
+.cross-row.na{border-left-color:#dee2e6}
+.cr-name{font-weight:600;font-size:12px}
+.cr-src{color:var(--sub);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cr-n{color:var(--sub);font-size:11.5px;text-align:right;font-variant-numeric:tabular-nums}
+.cr-rate{font-weight:600;font-variant-numeric:tabular-nums;text-align:right}
+.cross-row.ok .cr-rate{color:#2b7a42}
+.cross-row.warn .cr-rate{color:#b8860b}
+.cross-row.bad .cr-rate{color:#c92a2a}
+.cr-note{font-size:11px;color:#adb5bd;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cross-empty{font-size:12px;color:var(--sub);padding:11px 13px;background:#fdfaf3;border-radius:8px;border:1px solid #f0e6d2}
+
+/* 源间核对标记：✓ 一致 ~ 偏离 ✗ 异常 */
+.verify-tag{display:inline-flex;gap:3px;margin-left:7px;vertical-align:-1px}
+.vk{font-style:normal;font-size:10px;line-height:1;display:inline-flex;align-items:center;justify-content:center;
+  width:14px;height:14px;border-radius:3px;background:#f1f3f5;color:#adb5bd;cursor:help}
+.vk.ok{background:#e7f6ec;color:#2b7a42}
+.vk.warn{background:#fff6e5;color:#b8860b}
+.vk.bad{background:#fdecec;color:#c92a2a}
+.vk.na{background:#f8f9fa;color:#ced4da}
+
+.empty-state.small{padding:14px;font-size:12.5px}
+.empty-state.small b{font-size:13px}
+.es-note{display:inline-block;margin-top:8px;font-size:12px;color:var(--sub);line-height:1.7}
+
+@media(max-width:720px){
+  .wrap{padding:16px 12px 48px}
+  .page-title{font-size:17px}
+  .cand-table th,.cand-table td{padding:9px 8px}
+  .detail-box{padding:13px}
+  .bt-grid{grid-template-columns:repeat(2,1fr)}
+  .src-grid{grid-template-columns:repeat(2,1fr)}
+  .cross-row{grid-template-columns:1fr 54px 54px;grid-template-areas:"name n rate" "src note note";gap:3px 8px;padding:9px 11px}
+  .cr-name{grid-area:name}
+  .cr-src{grid-area:src;font-size:10.5px}
+  .cr-n{grid-area:n}
+  .cr-rate{grid-area:rate}
+  .cr-note{grid-area:note;text-align:right;font-size:10.5px}
+}
+
+/* 手机上再把表格收一次。9 列硬塞进 420px 只会每列都读不清，
+ * 这里藏掉「趋势」和「目标」两列：前者在详情页里有完整四级结构，
+ * 后者可由买入区间 × 盈亏比推算。剩下的列是下单真正要看的东西。 */
+@media(max-width:560px){
+  /* 页头三个按钮在 420px 下会被挤成两行、文字断成「行情首/页」。
+   * 让按钮整体换行而不是内部折字，标题一行、按钮一行。 */
+  .topbar{flex-wrap:wrap;row-gap:10px}
+  .top-actions{display:flex;width:100%;gap:8px}
+  .top-actions .btn{flex:1;white-space:nowrap;justify-content:center;padding-left:6px;padding-right:6px}
+  .cand-table th,.cand-table td{padding:8px 6px;font-size:12px}
+  .cand-table th:nth-child(4),.cand-table td:nth-child(4),
+  .cand-table th:nth-child(7),.cand-table td:nth-child(7){display:none}
+  .cand-table .rng{font-size:11.5px}
+  .cand-name{font-size:12.5px}
+  .cand-code{font-size:10.5px}
+  .score-num{font-size:17px}
+  .warn-chip{font-size:9.5px;padding:0 3px}
+  .verify-tag{gap:1px}
+  .vk{width:12px;height:12px;font-size:9px}
+}

@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>个股技术分析 · 趋势与支撑压力位</title>
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#c62828">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="股票看盘">
+<link rel="stylesheet" href="styles.css">
+<script src="sharelink.js"></script>
+<script>
+// SDK 多源加载：任一 CDN 可用即可，避免单一 CDN 不可达导致整站失效
+(function(){
+  var SRC=[
+    'sdk.js',
+    'https://unpkg.com/@tencent-ai/workbuddy-cloud-sdk@0.1.3-dev.c090db7.202610050023/lib/index.global.js',
+    'https://cdn.jsdelivr.net/npm/@tencent-ai/workbuddy-cloud-sdk@0.1.3-dev.c090db7.202610050023/lib/index.global.js'
+  ];
+  var i=0;
+  function load(){
+    if(i>=SRC.length){
+      window.__SDK_FAILED=true;
+      document.dispatchEvent(new Event('wb-sdk-failed'));
+      return;
+    }
+    var s=document.createElement('script');
+    s.src=SRC[i++];
+    s.onload=function(){ window.__SDK_READY=true; };
+    s.onerror=function(){ s.remove(); load(); };
+    document.head.appendChild(s);
+  }
+  load();
+})();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <button class="icon-btn" id="homeBtn" title="返回首页">←</button>
+  <div class="brand">
+    <span class="logo">盘</span>
+    <div>
+      <h1>个股技术分析</h1>
+      <span class="sub">趋势 · 支撑压力位 · 操作建议</span>
+    </div>
+  </div>
+  <button class="btn ghost w-toggle" id="wToggle" title="我的自选">自选 <b id="wToggleNum">0</b></button>
+  <button class="icon-btn" id="refreshBtn" title="刷新">↻</button>
+</header>
+
+<div class="search-wrap">
+  <div class="search-box">
+    <input id="q" placeholder="输入代码或名称：茅台 / 300750 / 宁德" autocomplete="off">
+    <button class="btn primary" id="goBtn">分析</button>
+  </div>
+  <div id="sug" class="sug hidden"></div>
+  <div class="chips" id="chips"></div>
+  <div class="board-bar" id="boardBar"></div>
+  <div class="board-list hidden" id="boardList"></div>
+</div>
+
+<div class="an-layout">
+  <main id="main">
+    <div class="placeholder" id="ph">
+      <div class="ph-icon">📈</div>
+      <h2>输入股票代码或名称开始分析</h2>
+      <p>左侧出结论，右侧是你的自选股 —— 点一只就切过去，不用来回搜</p>
+    </div>
+    <div id="result" class="hidden"></div>
+  </main>
+
+  <aside class="wside" id="wside">
+    <div class="wside-head">
+      <h2>我的自选</h2>
+      <span class="wside-count" id="wSideCount">—</span>
+      <button class="wside-close" id="wSideClose" title="收起">×</button>
+    </div>
+    <div class="wside-addwrap">
+      <form class="wside-add" id="wSideAdd" autocomplete="off">
+        <input id="wSideCode" placeholder="代码或名称，如 600519 / 茅台" enterkeyhint="done">
+        <button class="btn primary" type="submit" id="wSideAddBtn">加</button>
+      </form>
+      <div class="wside-sug hidden" id="wSideSug"></div>
+    </div>
+    <div class="wside-tip" id="wSideTip">自选股正在加载…</div>
+    <ul class="wside-list" id="wSideList"></ul>
+  </aside>
+</div>
+<div class="wside-mask" id="wSideMask"></div>
+
+<footer class="foot">
+  <p>数据来源：腾讯行情接口（实时日K，浏览器直连）· 数据截至 <span id="asof">—</span></p>
+  <p class="risk">风险提示：技术分析基于历史价量数据，无法预判突发消息与政策变化。本站内容仅供参考，不构成任何投资建议。市场有风险，投资需谨慎。</p>
+</footer>
+
+<script src="ta.js"></script>
+<script src="advice.js"></script>
+<script src="analyze.js"></script>
+</body>
+</html>
