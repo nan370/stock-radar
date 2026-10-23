@@ -104,11 +104,28 @@
     } catch (e) { return false; }
   }
 
+  /* 页面级提示：优先用页面自带的 toast。
+   * 不用 alert 兜底 —— 部分浏览器会静默拦截弹窗，
+   * 用户看到的就是「点了完全没反应」，这正是踩过的坑。 */
   function hint(msg) {
     if (typeof window.toast === 'function') {
       try { window.toast(msg); return; } catch (e) {}
     }
-    alert(msg);
+    var el = document.getElementById('__wsHint');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = '__wsHint';
+      el.style.cssText =
+        'position:fixed;left:50%;bottom:36px;transform:translateX(-50%);' +
+        'background:rgba(20,22,26,.93);color:#fff;font-size:13px;line-height:1.6;' +
+        'padding:10px 16px;border-radius:8px;z-index:10000;max-width:80vw;text-align:center;' +
+        'box-shadow:0 8px 24px rgba(0,0,0,.28);opacity:0;transition:opacity .2s;pointer-events:none';
+      document.body.appendChild(el);
+    }
+    el.textContent = msg;
+    el.style.opacity = '1';
+    clearTimeout(el.__t);
+    el.__t = setTimeout(function () { el.style.opacity = '0'; }, 2800);
   }
 
   var sheet = null;

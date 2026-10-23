@@ -366,7 +366,8 @@ const showErr = (m) => ($('#loginErr').textContent = m || '');
 const openModal = (id) => $('#' + id).classList.add('show');
 const closeModal = (id) => $('#' + id).classList.remove('show');
 
-$('#loginBtn').addEventListener('click', () => { showErr(''); openModal('loginModal'); });
+/* 登录按钮已从顶栏移除（外部托管下没有云端账号），绑定前先确认元素还在 */
+if ($('#loginBtn')) $('#loginBtn').addEventListener('click', () => { showErr(''); openModal('loginModal'); });
 $('#loginClose').addEventListener('click', () => closeModal('loginModal'));
 $('#watchBtn').addEventListener('click', () => {
   openModal('watchModal');
@@ -467,18 +468,21 @@ $('#wxBtn').addEventListener('click', async () => {
 function onSignedIn(u) {
   user = u;
   const name = (u.email || u.phone || '微信用户');
-  $('#loginBtn').textContent = name.length > 12 ? name.slice(0, 12) + '…' : name;
-  $('#loginBtn').classList.remove('primary');
-  $('#loginBtn').classList.add('ghost');
-  $('#loginBtn').onclick = async () => {
-    await cloud.auth.signOut();
-    user = null;
-    $('#loginBtn').textContent = '登录';
-    $('#loginBtn').classList.add('primary');
-    $('#loginBtn').classList.remove('ghost');
-    $('#loginBtn').onclick = null;
-    showLogin();
-  };
+  const lb = $('#loginBtn');
+  if (lb) {
+    lb.textContent = name.length > 12 ? name.slice(0, 12) + '…' : name;
+    lb.classList.remove('primary');
+    lb.classList.add('ghost');
+    lb.onclick = async () => {
+      await cloud.auth.signOut();
+      user = null;
+      lb.textContent = '登录';
+      lb.classList.add('primary');
+      lb.classList.remove('ghost');
+      lb.onclick = null;
+      showLogin();
+    };
+  }
   $('#watchTip').textContent = `已登录：${name}。自选股保存在你的云端账户中，仅你可见。`;
   closeModal('loginModal');
   loadWatch();
@@ -694,11 +698,8 @@ async function addWatchEntry(raw, nameRaw) {
 }
 
 $('#wAddBtn').addEventListener('click', () => addWatchEntry($('#wCode').value, $('#wName').value));
-/* 换设备（电脑⇄手机）时把自选清单搬过去：生成一个带清单的网址 */
-if ($('#wShareBtn')) $('#wShareBtn').addEventListener('click', () => {
-  if (!lsRead().length) return alert('自选股还是空的，先加几只再分享');
-  WatchSync.openSheet();
-});
+/* 换设备的分享按钮绑在 HTML 的内联 onclick 上（见 index.html）：
+ * 这样即使浏览器还缓存着旧版 app.js，按钮也不会「点了没反应」。 */
 $('#wCode').addEventListener('input', async (e) => {
   await loadInsts();
   renderMSug(e.target.value);
@@ -755,24 +756,13 @@ async function boot() {
     await whenSDK();
   } catch (e) {
     console.warn('[WorkBuddy Cloud] SDK 不可用，账户功能关闭', e && e.message);
-    $('#loginBtn').textContent = '登录不可用';
-    $('#loginBtn').title = '云服务 SDK 加载失败';
-    $('#loginBtn').disabled = true;
+    const lb2 = $('#loginBtn');
+    if (lb2) { lb2.textContent = '登录不可用'; lb2.title = '云服务 SDK 加载失败'; lb2.disabled = true; }
     return loadWatch();
   }
   if (!CLOUD_ON) {
-    /* 外部托管：账号系统不存在，自选用本机存储 + 分享链接搬移 */
-    const b = $('#loginBtn');
-    if (b) {
-      b.textContent = '本机模式';
-      b.title = '当前部署没有云端账号服务，无需登录。自选存在本机，换设备请用「分享到其他设备」。';
-      b.addEventListener('click', (e) => {
-        e.stopImmediatePropagation();
-        alert('当前是通过外部托管访问的，没有可用的云端账号，所以不需要登录。\n\n' +
-              '自选股存在这台设备的浏览器里。换设备时：打开「我的自选」→ 点「分享到其他设备」→ 复制生成的链接，' +
-              '在另一台设备上打开即可导入。');
-      }, true);
-    }
+    /* 外部托管：没有云端账号服务。登录按钮已从顶栏移除，
+     * 自选走本机存储 + 分享链接搬移，账户相关逻辑一律不启动。 */
     return loadWatch();
   }
   cloud = WorkBuddyCloud.createWorkBuddyCloud(CFG);

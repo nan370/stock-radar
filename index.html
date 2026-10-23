@@ -11,9 +11,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="股票看盘">
-<link rel="stylesheet" href="styles.css">
-<script src="sharelink.js"></script>
-<script src="watchsync.js"></script>
+<link rel="stylesheet" href="styles.css?v=20261023c">
+<script src="sharelink.js?v=20261023c"></script>
+<script src="watchsync.js?v=20261023c"></script>
 <script>
 // SDK 多源加载：任一 CDN 可用即可，避免单一 CDN 不可达导致整站失效
 (function(){
@@ -54,7 +54,6 @@
     <a class="btn primary" href="analyze.html">个股分析</a>
     <button class="btn ghost" id="refreshBtn">刷新数据</button>
     <button class="btn ghost" id="watchBtn">我的自选</button>
-    <button class="btn primary" id="loginBtn">登录</button>
   </div>
 </header>
 
@@ -198,13 +197,13 @@
       <div class="msug hidden" id="wSug"></div>
     </div>
     <button class="btn primary wide" id="wAddBtn">添加到自选</button>
-    <button class="btn wide" id="wShareBtn">分享到其他设备</button>
+    <button class="btn wide" id="wShareBtn" onclick="if(window.WatchSync){WatchSync.openSheet();}">分享到其他设备</button>
     <p class="watch-count" id="watchCount"></p>
     <ul class="watch-list" id="watchList"></ul>
   </div>
 </div>
 
-<script src="live.js"></script>
-<script src="app.js"></script>
+<script src="live.js?v=20261023c"></script>
+<script src="app.js?v=20261023c"></script>
 </body>
 </html>
