@@ -36,6 +36,12 @@ let busy = false;
 const LS_KEY = 'wb_instrument_v3';
 const LS_TTL = 7 * 24 * 3600 * 1000;
 
+/* 云端后端（登录 / 自选同步 / AI 点评）只存在于 *.app.workbuddy.host，
+ * 而那个域名在公网没有 DNS 记录。一旦站点部署到 GitHub Pages 或本机静态服务，
+ * 云端必然连不上 —— 所以直接判定为「本机模式」，不去发那些注定失败的请求，
+ * 也不给一个点了没反应的登录按钮。 */
+const CLOUD_ON = /(^|\.)app\.workbuddy\.host$/.test(location.hostname);
+
 const BOARD_LABEL = {
   '沪市主板': '沪主板', '深市主板': '深主板', '创业板': '创业板',
   '科创板': '科创板', '北交所': '北交所', '指数': '指数',
@@ -99,6 +105,7 @@ async function init() {
   /* SDK 只管账户与 AI 两个能力，标的清单与 K 线都不依赖它。
    * 所以这里不再「SDK 一失败就整页退出」，而是降级继续。 */
   try {
+    if (!CLOUD_ON) throw new Error('外部托管，云端不可达');
     await whenSDK();
     cloud = WorkBuddyCloud.createWorkBuddyCloud(CFG);
   } catch (e) {
@@ -133,7 +140,9 @@ async function init() {
     const b = document.createElement('div');
     b.className = 'login-tip';
     b.id = 'loginTip';
-    b.textContent = '未登录：自选只存在这台设备的浏览器里，登录后可跨设备同步';
+    b.textContent = CLOUD_ON
+      ? '未登录：自选只存在这台设备的浏览器里，登录后可跨设备同步'
+      : '自选存在本机。换设备时点右上「分享」生成链接，在另一台设备打开即可导入';
     $('#chips').after(b);
   } else {
     watchLoad();
@@ -784,7 +793,9 @@ function watchRender() {
 
   $('#wSideTip').textContent = watchSess
     ? '已登录：自选存在云端账户，换设备也在。点一只即可分析。'
-    : '未登录：自选只存在这台设备。点一只即可分析。';
+    : (CLOUD_ON
+        ? '未登录：自选只存在这台设备。点一只即可分析。'
+        : '自选存在本机。换设备点上方「分享」，打开链接即可导入。');
 
   if (!WATCH.length) {
     ul.innerHTML = '<li class="wside-empty">还没有自选股。<br>在上方输入代码或名称（如 600519 / 茅台），' +
@@ -952,7 +963,14 @@ function fitSidebar() {
 }
 
 function watchBoot() {
+  /* 从分享链接进来：先把清单合并进本机再渲染，否则会先闪一下空列表 */
+  var imported = (window.WatchSync && WatchSync.applyFromUrl()) || 0;
   watchLoad();
+  if (imported) setTimeout(function () { toast('已导入 ' + imported + ' 只自选股'); }, 700);
+
+  var shareBtn = $('#wSideShare');
+  if (shareBtn) shareBtn.addEventListener('click', function () { WatchSync.openSheet(); });
+
   fitSidebar();
   window.addEventListener('scroll', fitSidebar, { passive: true });
   window.addEventListener('resize', fitSidebar);
@@ -986,10 +1004,13 @@ function watchBoot() {
     if (!raw) return;
     const hits = search(raw, 8);
     const lower = raw.toLowerCase();
-    /* 精确命中（完整代码 / 纯代码 / 完全同名）优先，其次唯一结果 */
-    const exact = hits.find((i) => i.code === lower
+    /* 精确命中（完整代码 / 纯代码 / 完全同名）优先，其次唯一结果。
+     * 注意歧义：000001 既是「上证指数」也是「平安银行」，而 search() 给指数
+     * 加权 +2，指数会排前面。加自选要的是个股，所以精确命中里优先非指数。 */
+    const exactHits = hits.filter((i) => i.code === lower
       || i.code.replace(/^[a-z]+/, '') === lower
       || i.name === raw);
+    const exact = exactHits.find((i) => i.kind !== 'index') || exactHits[0];
     const pick = exact || (hits.length === 1 ? hits[0] : null);
     if (pick) {
       $('#wSideCode').value = '';

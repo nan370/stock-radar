@@ -14,6 +14,12 @@ function whenSDK() {
   });
 }
 
+/* 云端后端（登录 / 自选同步 / AI 点评）只存在于 *.app.workbuddy.host，
+ * 而那个域名在公网没有 DNS 记录。一旦站点部署到 GitHub Pages 或本机静态服务，
+ * 云端必然连不上 —— 所以直接判定为「本机模式」，不去发那些注定失败的请求，
+ * 也不给一个点了没反应的登录按钮。 */
+const CLOUD_ON = /(^|\.)app\.workbuddy\.host$/.test(location.hostname);
+
 const CFG = {
   /* 应用 2026-10-22 重建过（旧应用已删除），端点必须跟着换。
    * 行情数据已不再走云端，这里只剩登录与自选股会用。 */
@@ -511,7 +517,9 @@ async function loadWatch() {
       return renderWatch(local, true);
     }
   }
-  $('#watchTip').textContent = '未登录：自选股只存在这台设备的浏览器里，登录后可跨设备同步。';
+  $('#watchTip').textContent = CLOUD_ON
+    ? '未登录：自选股只存在这台设备的浏览器里，登录后可跨设备同步。'
+    : '自选存在这台设备的浏览器里。换设备点「分享到其他设备」，打开链接即可导入。';
   renderWatch(local, true);
 }
 
@@ -686,6 +694,11 @@ async function addWatchEntry(raw, nameRaw) {
 }
 
 $('#wAddBtn').addEventListener('click', () => addWatchEntry($('#wCode').value, $('#wName').value));
+/* 换设备（电脑⇄手机）时把自选清单搬过去：生成一个带清单的网址 */
+if ($('#wShareBtn')) $('#wShareBtn').addEventListener('click', () => {
+  if (!lsRead().length) return alert('自选股还是空的，先加几只再分享');
+  WatchSync.openSheet();
+});
 $('#wCode').addEventListener('input', async (e) => {
   await loadInsts();
   renderMSug(e.target.value);
@@ -722,6 +735,16 @@ $('#watchList').addEventListener('click', async (e) => {
 
 /* ---------- 启动 ---------- */
 async function boot() {
+  /* 分享链接带进来的自选：先并进本机，再走原来的加载流程 */
+  const imported = (window.WatchSync && WatchSync.applyFromUrl()) || 0;
+  if (imported) {
+    setTimeout(() => {
+      try { openModal('watchModal'); } catch (e) {}
+      const t = $('#watchTip');
+      if (t) t.textContent = '已从这个分享链接导入 ' + imported + ' 只自选股。';
+    }, 2600);
+  }
+
   /* 行情先上，账户后管。
    * 以前的顺序是先 await 云 SDK、再鉴权，任何一步失败就直接 return，
    * 结果云服务一出问题整页空白 —— 行情数据根本不该依赖账户系统。 */
@@ -735,6 +758,21 @@ async function boot() {
     $('#loginBtn').textContent = '登录不可用';
     $('#loginBtn').title = '云服务 SDK 加载失败';
     $('#loginBtn').disabled = true;
+    return loadWatch();
+  }
+  if (!CLOUD_ON) {
+    /* 外部托管：账号系统不存在，自选用本机存储 + 分享链接搬移 */
+    const b = $('#loginBtn');
+    if (b) {
+      b.textContent = '本机模式';
+      b.title = '当前部署没有云端账号服务，无需登录。自选存在本机，换设备请用「分享到其他设备」。';
+      b.addEventListener('click', (e) => {
+        e.stopImmediatePropagation();
+        alert('当前是通过外部托管访问的，没有可用的云端账号，所以不需要登录。\n\n' +
+              '自选股存在这台设备的浏览器里。换设备时：打开「我的自选」→ 点「分享到其他设备」→ 复制生成的链接，' +
+              '在另一台设备上打开即可导入。');
+      }, true);
+    }
     return loadWatch();
   }
   cloud = WorkBuddyCloud.createWorkBuddyCloud(CFG);
