@@ -32,6 +32,8 @@ var Wyckoff = (function () {
     FLAT_CHG: 0.5,      // 放量滞涨：涨跌幅绝对值上限 %
     HI_POS: 0.85,       // 高位区间阈值
     LO_POS: 0.25,       // 低位区间阈值
+    RANGE_MAX_W: 0.25,  // 区间成立上限：（高-低)/低 超过该值视为单边趋势
+    A_BARS: 25,         // A 段判定的区间存续根数上限
   };
 
   function mean(a) {
@@ -160,6 +162,193 @@ var Wyckoff = (function () {
     return out;
   }
 
+  /* ---------------- 阶段状态机（Phase A ~ E） ----------------
+   * 老版本只给一句「吸筹迹象 / 派发嫌疑」，那是形容词，不是结构。这里按威科夫
+   * 原始的「交易区间生命周期」给出可复算的分段：
+   *
+   *   区间成立的前提：近 RANGE_N 根的振幅（(高-低)/低）不超过 RANGE_MAX_W。
+   *   超过就不是区间，是单边趋势 —— 此时硬套 A~E 会把上涨趋势说成「吸筹」，
+   *   所以直接判 trend-up / trend-down，并明说「不存在有效区间」。
+   *
+   *   A 段 区间形成：区间存续不足 A_BARS 根，且期间出现过高潮量或首个假突破。
+   *   B 段 区间反复：存续 ≥ A_BARS 根，无有效 Spring/Upthrust，价格在中段反复。
+   *   C 段 测试：近 EVENT_WINDOW 根内有 Spring（或 Upthrust），且其后 3 根内
+   *            出现「缩量测试」——量比 < VOL_DRY、不破 Spring 低点、收回其上。
+   *   D 段 区间内推进：近窗口内有 SOS/SOW，且价格已推到区间一侧（pos > .72 / < .28）。
+   *   E 段 离开区间：最近 2 根收盘均在区间外 2% 以上。
+   *
+   * 分段只描述「现在处在什么位置」，不直接给买卖结论；买卖结论仍由买点与
+   * 交易计划给。两者一致时页面会说「结构共振」，冲突时会如实标注。
+   */
+  function cycleOf(bars, vols, ctx) {
+    var n = bars.length;
+    var R = CFG.RANGE_N, W = CFG.RANGE_MAX_W, A_BARS = CFG.A_BARS;
+    var rangeHi = ctx.rangeHi, rangeLo = ctx.rangeLo, price = ctx.price;
+    var pos = ctx.pos, width = rangeLo > 0 ? (rangeHi - rangeLo) / rangeLo : 0;
+    var ma20 = mean(bars.slice(Math.max(0, n - 20)).map(function (b) { return b.c; }));
+    var ma60 = mean(bars.slice(Math.max(0, n - 60)).map(function (b) { return b.c; }));
+    var ref20 = bars[Math.max(0, n - 21)].c;
+    var mom20 = ref20 ? (price - ref20) / ref20 : 0;
+
+    var ev = ctx.events || [];
+    function near(key, win) {
+      for (var i = 0; i < ev.length; i++) {
+        if (ev[i].key === key && ev[i].daysAgo <= (win == null ? CFG.EVENT_WINDOW : win)) return ev[i];
+      }
+      return null;
+    }
+
+    var evd = [];
+
+    /* 无有效区间：单边趋势 */
+    if (width > W) {
+      var up = (price > ma60 && mom20 > 0) || (price > ma20 && price > ma60);
+      evd.push('近 ' + R + ' 日振幅 ' + (width * 100).toFixed(1) + '%，超过 ' + (W * 100).toFixed(0) +
+        '% 的区间上限，说明当前是单边行情而非交易区间');
+      evd.push('收盘 ' + price.toFixed(2) + ' / MA20 ' + ma20.toFixed(2) + ' / MA60 ' + ma60.toFixed(2) +
+        '；20 日动量 ' + (mom20 * 100).toFixed(1) + '%');
+      return {
+        code: up ? 'trend-up' : 'trend-down', hasRange: false, width: width, pos: pos,
+        rangeBars: R, name: up ? '单边上行' : '单边下行',
+        text: up ? '单边上行：不存在有效交易区间，回踩均线即为加仓点'
+          : '单边下行：不存在有效交易区间，反弹均线附近即减仓点',
+        evidence: evd,
+      };
+    }
+
+    /* 区间存续根数：从末端向前数，收盘仍在区间内的连续根数 */
+    var keep = 0;
+    for (var i = n - 1; i >= Math.max(0, n - R); i--) {
+      var c = bars[i].c;
+      if (c >= rangeLo * 0.98 && c <= rangeHi * 1.02) keep++;
+      else break;
+    }
+    var rangeBars = keep;
+
+    /* E 段：连续 2 根收盘在区间外 */
+    var outside = 0;
+    for (var j = n - 1; j >= Math.max(0, n - 2); j--) {
+      if (bars[j].c > rangeHi * 1.02 || bars[j].c < rangeLo * 0.98) outside++;
+    }
+    var sod = near('sos', 8) || near('sow', 8);
+    if (outside >= 2) {
+      var upSide = price > rangeHi;
+      evd.push('最近 2 根收盘均在区间' + (upSide ? '上沿 ' + rangeHi.toFixed(2) + ' 上方' : '下沿 ' + rangeLo.toFixed(2) + ' 下方') + '（超出 2%）');
+      if (sod) evd.push('区间边缘出现 ' + sod.name + '（' + sod.daysAgo + ' 日前，量比 ' +
+        (ctx.volRatio || 0).toFixed(2) + '）');
+      return {
+        code: 'E', hasRange: true, width: width, pos: pos, rangeBars: rangeBars,
+        rangeHi: rangeHi, rangeLo: rangeLo,
+        name: upSide ? 'E 段 上行离开区间' : 'E 段 下行离开区间',
+        text: upSide
+          ? '已向上离开区间，进入趋势延续段；回到区间上沿 ' + rangeHi.toFixed(2) + ' 附近不破即为回踩买点'
+          : '已向下离开区间，进入下跌延续段；反抽区间下沿 ' + rangeLo.toFixed(2) + ' 不过即为减仓点',
+        evidence: evd,
+      };
+    }
+
+    /* C 段：Spring / Upthrust + 缩量测试 */
+    var sp = near('spring', CFG.EVENT_WINDOW);
+    var ut = near('upthrust', CFG.EVENT_WINDOW);
+    function tested(key, kind) {
+      var e = near(key, CFG.EVENT_WINDOW);
+      if (!e) return null;
+      var idx = n - 1 - e.daysAgo;
+      var lowBase = bars[idx].l, hiBase = bars[idx].h;
+      for (var k = idx + 1; k <= Math.min(n - 1, idx + 3); k++) {
+        var vma = mean(vols.slice(Math.max(0, k - CFG.VOL_N), k));
+        var vr = vma > 0 ? vols[k] / vma : 1;
+        var hold = kind === 'bottom'
+          ? (bars[k].l >= lowBase * 0.995 && bars[k].c > lowBase)
+          : (bars[k].h <= hiBase * 1.005 && bars[k].c < hiBase);
+        if (vr < CFG.VOL_DRY && hold) {
+          return { e: e, testIdx: k, vr: vr, daysAgo: n - 1 - k };
+        }
+      }
+      return { e: e, testIdx: -1, vr: null, daysAgo: null };
+    }
+    var tSp = sp ? tested('spring', 'bottom') : null;
+    var tUt = ut ? tested('upthrust', 'top') : null;
+    if (tSp && tSp.testIdx >= 0) {
+      evd.push(sp.daysAgo + ' 日前出现 ' + sp.name + '，' + tSp.daysAgo + ' 日前缩量测试（量比 ' +
+        tSp.vr.toFixed(2) + '，未破 ' + bars[n - 1 - sp.daysAgo].l.toFixed(2) + '）');
+      evd.push('区间 ' + rangeLo.toFixed(2) + ' ~ ' + rangeHi.toFixed(2) + '，现价处于 ' + (pos * 100).toFixed(0) + '% 分位');
+      return {
+        code: 'C', hasRange: true, width: width, pos: pos, rangeBars: rangeBars,
+        rangeHi: rangeHi, rangeLo: rangeLo,
+        name: 'C 段 测试完成（吸筹）',
+        text: 'Spring 假跌破后缩量测试成立，浮动筹码已被吸收；只要不破 ' +
+          bars[n - 1 - sp.daysAgo].l.toFixed(2) + '，这段结构的失效条件就很明确',
+        evidence: evd,
+      };
+    }
+    if (tUt && tUt.testIdx >= 0) {
+      evd.push(ut.daysAgo + ' 日前出现 ' + ut.name + '，' + tUt.daysAgo + ' 日前缩量反抽（量比 ' +
+        tUt.vr.toFixed(2) + '，未过 ' + bars[n - 1 - ut.daysAgo].h.toFixed(2) + '）');
+      return {
+        code: 'C', hasRange: true, width: width, pos: pos, rangeBars: rangeBars,
+        rangeHi: rangeHi, rangeLo: rangeLo,
+        name: 'C 段 测试完成（派发）',
+        text: 'Upthrust 假突破后缩量反抽成立，上方供给仍在；突破 ' +
+          bars[n - 1 - ut.daysAgo].h.toFixed(2) + ' 才能推翻这个判断',
+        evidence: evd,
+      };
+    }
+    if (sp || ut) {
+      var e0 = sp || ut;
+      evd.push(e0.daysAgo + ' 日前出现 ' + e0.name + '，但随后 3 根内没有出现缩量测试（量比未降至 ' +
+        CFG.VOL_DRY + ' 以下），测试尚未完成');
+      return {
+        code: 'B', hasRange: true, width: width, pos: pos, rangeBars: rangeBars,
+        rangeHi: rangeHi, rangeLo: rangeLo,
+        name: 'B~C 段 假突破已出、测试未完成',
+        text: '假突破发生了，但还缺一次缩量测试来确认；此时介入属于抢跑，等测试完成再动',
+        evidence: evd,
+      };
+    }
+
+    /* D 段：SOS/SOW + 已到区间一侧 */
+    if (sod && (pos > 0.72 || pos < 0.28)) {
+      evd.push(sod.daysAgo + ' 日前出现 ' + sod.name + '，现价处于区间 ' + (pos * 100).toFixed(0) + '% 分位');
+      evd.push('区间 ' + rangeLo.toFixed(2) + ' ~ ' + rangeHi.toFixed(2) + '，存续约 ' + rangeBars + ' 根');
+      return {
+        code: 'D', hasRange: true, width: width, pos: pos, rangeBars: rangeBars,
+        rangeHi: rangeHi, rangeLo: rangeLo,
+        name: sod.dir > 0 ? 'D 段 区间内走强' : 'D 段 区间内走弱',
+        text: sod.dir > 0
+          ? '需求已把价格推到区间上沿，突破 ' + rangeHi.toFixed(2) + ' 即进入 E 段'
+          : '供给已把价格压到区间下沿，失守 ' + rangeLo.toFixed(2) + ' 即进入 E 段（下行）',
+        evidence: evd,
+      };
+    }
+
+    /* 高潮量 → A 段 */
+    var cl = near('sellingclimax', CFG.EVENT_WINDOW) || near('buyingclimax', CFG.EVENT_WINDOW);
+    if (cl || rangeBars < A_BARS) {
+      if (cl) evd.push(cl.daysAgo + ' 日前出现 ' + cl.name + '，量比 ' + (ctx.volRatio || 0).toFixed(2));
+      evd.push('当前区间仅存续约 ' + rangeBars + ' 根（< ' + A_BARS + ' 根），属区间刚形成的初期');
+      return {
+        code: 'A', hasRange: true, width: width, pos: pos, rangeBars: rangeBars,
+        rangeHi: rangeHi, rangeLo: rangeLo,
+        name: 'A 段 区间形成初期',
+        text: '区间刚成立，方向未定。A 段的任务是画边界，不是做交易 —— 等 B 段回踩与 C 段测试',
+        evidence: evd,
+      };
+    }
+
+    /* 其余 → B 段 */
+    evd.push('区间已存续约 ' + rangeBars + ' 根，价格在区间 ' + (pos * 100).toFixed(0) +
+      '% 分位反复，无有效 Spring/Upthrust');
+    evd.push('区间 ' + rangeLo.toFixed(2) + ' ~ ' + rangeHi.toFixed(2) + '，宽度 ' + (width * 100).toFixed(1) + '%');
+    return {
+      code: 'B', hasRange: true, width: width, pos: pos, rangeBars: rangeBars,
+      rangeHi: rangeHi, rangeLo: rangeLo,
+      name: 'B 段 区间反复（建仓/派发进行中）',
+      text: '区间内反复是最耗时的阶段，也是最容易被震出去的地方；只在区间下沿附近参与，中段不做',
+      evidence: evd,
+    };
+  }
+
   function analyze(bars, opts) {
     opts = opts || {};
     if (!bars || bars.length < CFG.RANGE_N + 5) return null;
@@ -225,6 +414,13 @@ var Wyckoff = (function () {
     else if (pos < 0.45 && bull.length > bear.length) { phase = 'accumulation'; phaseText = '吸筹迹象（低位承接）'; }
     else { phase = 'neutral'; phaseText = '区间震荡（方向未定）'; }
 
+    /* 阶段状态机：把「吸筹/派发」这类形容词换成可复算的 A~E 分段 */
+    var cycle = cycleOf(bars, vols, {
+      rangeHi: rangeHi, rangeLo: rangeLo, price: price, pos: pos,
+      events: events.slice().sort(function (a, b) { return a.daysAgo - b.daysAgo; }),
+      volRatio: volRatio,
+    });
+
     return {
       price: price, chgPct: chgPct,
       volRatio: volRatio, volMA: volMA,
@@ -234,11 +430,12 @@ var Wyckoff = (function () {
       events: events.slice().sort(function (a, b) { return a.daysAgo - b.daysAgo; }),
       bullCount: bull.length, bearCount: bear.length,
       score: score, phase: phase, phaseText: phaseText,
+      cycle: cycle,
       partial: partial,
     };
   }
 
-  var api = { CFG: CFG, analyze: analyze, detectAt: detectAt, rangePos: rangePos };
+  var api = { CFG: CFG, analyze: analyze, detectAt: detectAt, rangePos: rangePos, cycleOf: cycleOf };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   return api;
 })();

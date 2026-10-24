@@ -22,7 +22,7 @@ var Screener = (function () {
   var CFG = {
     POOL: 60,             // L2 精算标的数
     TOP: 10,              // L3 入榜数
-    MIN_SCORE: 45,        // 入榜最低综合分
+    MIN_SCORE: 42,        // 入榜最低综合分（100 分制；归一化后重定，见 model.js）
     MIN_AMOUNT: 8000,     // 最小成交额（万元）＝ 8000 万
     MIN_FLOAT_CAP: 20,    // 最小流通市值（亿）
     MAX_RISE: 9.0,        // 涨幅超过该值视为接近涨停，降权
@@ -362,9 +362,14 @@ var Screener = (function () {
       var inflow = r.amount > 0 ? r.mainNet / r.amount : 0;
       var sFlow = clamp(0.5 + inflow * 4, 0, 1);
 
+      /* 权重调整（2026-10-24）：
+       * 原来当日涨幅的横向排名占 0.30，是第一大权重，而整个漏斗的落点是
+       * 「回踩买点」—— 用「今天涨得最多」当第一筛选项，等于把追涨写进了模型。
+       * 现在涨幅排名降到 0.14，量比/换手/资金三项健康度合计 0.48，
+       * 让「缩量回踩但资金没走」的票能进候选池，而不是被涨幅榜挤掉。 */
       r._pre = 100 * (
-        0.30 * rPct[i] + 0.10 * rMain[i] + 0.08 * rAmt[i] +
-        0.14 * sVol + 0.14 * sTurn + 0.10 * sAmp + 0.08 * sPct + 0.06 * sFlow
+        0.14 * rPct[i] + 0.10 * rMain[i] + 0.06 * rAmt[i] +
+        0.18 * sVol + 0.14 * sTurn + 0.10 * sAmp + 0.12 * sPct + 0.16 * sFlow
       );
       r._preDetail = { sVol: sVol, sTurn: sTurn, sAmp: sAmp, sPct: sPct, inflow: inflow };
     }
@@ -502,130 +507,11 @@ var Screener = (function () {
     return groups;
   }
 
-  /* --------------------- 交易计划 --------------------- */
+  /* --------------------- 交易计划 ---------------------
+   * 实现已统一到 model.js：选股页与个股分析页给的是同一套买卖价推导，
+   * 不再各写一份（以前两份逻辑漂移，同一只票两页的止损价能差 4%）。 */
   function buildPlan(ctx) {
-    var price = ctx.price, day = ctx.day, week = ctx.week, month = ctx.month, wy = ctx.wyckoff, a = ctx.atr;
-    var cands = [];
-
-    function add(p, label, w) {
-      if (p == null || !isFinite(p) || p <= 0) return;
-      cands.push({ price: p, label: label, weight: w });
-    }
-
-    /* 缠论各级别中枢边界：最硬的结构位 */
-    if (month && month.lastPivot) {
-      add(month.lastPivot.zd, '月线中枢下沿', 9);
-      add(month.lastPivot.zg, '月线中枢上沿', 9);
-    }
-    if (week && week.lastPivot) {
-      add(week.lastPivot.zd, '周线中枢下沿', 7);
-      add(week.lastPivot.zg, '周线中枢上沿', 7);
-    }
-    if (day && day.lastPivot) {
-      add(day.lastPivot.zd, '日线中枢下沿', 6);
-      add(day.lastPivot.zg, '日线中枢上沿', 6);
-    }
-    /* 笔的端点：最近的转折低/高点 */
-    if (day && day.pens.length) {
-      var pens = day.pens;
-      for (var i = pens.length - 1; i >= Math.max(0, pens.length - 4); i--) {
-        add(pens[i].low, '日线笔低点', 4);
-        add(pens[i].high, '日线笔高点', 4);
-      }
-    }
-    /* 威科夫交易区间边界 */
-    if (wy) {
-      add(wy.rangeLo, '60日区间下沿', 5);
-      add(wy.rangeHi, '60日区间上沿', 5);
-      add(wy.priorLo, '20日前低', 3);
-      add(wy.priorHi, '20日前高', 3);
-    }
-    /* 均线动态位：只作为回调支撑，不作为上方压力。
-     * 均线是跟随指标，在上涨途中 MA5/MA10 常常就贴在现价上方一点点，
-     * 若参与压力位计算，最近压力会变成「明天均线」，盈亏比被系统性压到 0.3 以下，
-     * 结果是所有票都不合格。上方压力只能是真实的结构位（中枢/笔高点/区间上沿）。 */
-    if (ctx.ma) {
-      ctx.ma.forEach(function (m) {
-        if (m.value < price) add(m.value, 'MA' + m.n, m.n >= 60 ? 3 : 2);
-      });
-    }
-
-    var sup = clusterLevels(cands, price, 'down').slice(0, 3);
-    var res = clusterLevels(cands, price, 'up').slice(0, 3);
-
-    var s1 = sup[0] ? sup[0].price : price * 0.95;
-    var r1 = res[0] ? res[0].price : price * 1.08;
-
-    /* 止损：日线买点低点失效位，其次日线中枢下沿，两者取更近且必须低于买区 */
-    var stopCands = [];
-    if (day && day.buy && day.buy.price) stopCands.push({ p: day.buy.price * 0.985, label: '跌破日线买点低点' });
-    if (day && day.lastPivot) stopCands.push({ p: day.lastPivot.zd * 0.99, label: '跌破日线中枢下沿' });
-    if (wy) stopCands.push({ p: wy.rangeLo * 0.985, label: '跌破60日区间下沿' });
-    if (a) stopCands.push({ p: price - a * 2, label: '2倍ATR止损' });
-
-    var stop = null;
-    stopCands.forEach(function (c) {
-      if (c.p < s1 && (stop == null || c.p > stop.p)) stop = c;
-    });
-    if (!stop) stop = { p: s1 * 0.97, label: '支撑位下方 3%' };
-
-    /* 买入区间：宽度硬性上限 3%。支撑若离现价很远（等回踩型），区间不能跟着
-     * 拉成 8%，否则就是一串无法执行的数字。上沿不追过现价 1.5%，也不超过最近压力。 */
-    var hi = Math.min(price * 1.015, r1 * 0.995);
-    var loRaw = Math.max(stop.p * 1.008, s1 * 1.002);
-    if (!(hi > loRaw)) { hi = price * 1.01; loRaw = price * 0.985; }
-    var lo = Math.max(loRaw, hi * 0.97);
-
-    var mid = (lo + hi) / 2;
-
-    /* 止损距离用 ATR 归一化。
-     * 只看结构位会出两种极端：结构位贴着现价时止损仅 1~2%，一根日内插针就打掉；
-     * 结构位很远时止损 -15%，风险敞口过大。这里把距离夹在 [1.1ATR, 12%] 内。 */
-    var gap = mid - stop.p;
-    var gapMin = a ? Math.max(a * 1.1, mid * 0.012) : mid * 0.015;
-    var gapMax = mid * 0.12;
-    if (gap < gapMin) {
-      stop = { p: mid - Math.min(gapMin, gapMax), label: stop.label + '（按1.1倍ATR放宽）' };
-      gap = mid - stop.p;
-    } else if (gap > gapMax) {
-      stop = { p: mid - gapMax, label: stop.label + '（止损超过12%，已收窄）' };
-      gap = mid - stop.p;
-    }
-
-    /* 目标位同样要夹住。
-     * 最近压力可能是几个月前的高点，一路 +29% 的「目标」不是目标，是幻想；
-     * 用 6 倍 ATR 与 +15% 双重封顶，宁可能看到的空间小一点，也不给不可执行的价格。 */
-    var t1 = r1;
-    if (a) t1 = Math.min(t1, mid + a * 6);
-    t1 = Math.min(t1, mid * 1.15);
-    if (t1 <= mid * 1.01) t1 = mid * 1.01;      // 只防止目标低于成本价
-
-    var t2 = res[1] ? res[1].price : r1 * 1.06;
-    if (a) t2 = Math.min(t2, mid + a * 12);
-    t2 = Math.min(t2, mid * 1.30);
-    if (t2 <= t1 * 1.02) t2 = t1 * 1.02;
-
-    var risk = gap;
-    var rr = risk > 0 ? (t1 - mid) / risk : null;
-    var rr2 = risk > 0 ? (t2 - mid) / risk : null;
-
-    /* 回踩型：现价高于买入区间上沿（最近压力太近），或最近支撑明显低于现价，
-     * 两种情况都说明现价不是买点，要等回到区间里 */
-    var waitPullback = (hi < price * 0.998) || (s1 < price * 0.98);
-
-    return {
-      supports: sup, resistances: res,
-      buyLo: lo, buyHi: hi, buyMid: mid,
-      stop: stop.p, stopReason: stop.label,
-      target1: t1, target2: t2,
-      rr: rr, rr2: rr2,
-      riskPct: mid > 0 ? risk / mid * 100 : null,
-      atr: a,
-      waitPullback: waitPullback,
-      targetNote: (t1 >= r1 - 1e-9) ? '目标为最近压力位'
-        : '最近压力过远，目标已按 6 倍 ATR / +15% 封顶',
-      widthPct: (hi - lo) / mid * 100,
-    };
+    return Model.plan(ctx);
   }
 
   /* --------------------- L2：单只精算 --------------------- */
@@ -741,116 +627,11 @@ var Screener = (function () {
     });
   }
 
-  /* --------------------- L3：多因子打分 --------------------- */
+  /* --------------------- L3：多因子打分 ---------------------
+   * 实现已统一到 model.js（权重合计 100、动量按趋势效率归一、阶段 A~E 参与量价分）。
+   * 这里保留一层薄封装，方便选股页原有调用与展示字段（detail / grade）不变。 */
   function scoreOf(it) {
-    var m = it.month, w = it.week, d = it.day, wy = it.wyckoff, p = it.plan;
-    var detail = [];
-
-    /* 1. 结构分（40）：四级联立 */
-    var s = 0;
-    if (m) {
-      if (m.dir > 0) { s += 12; detail.push({ k: '月线', v: '+12', t: '月线笔向上，大级别方向不逆势' }); }
-      else if (m.position === 'inside') { s += 5; detail.push({ k: '月线', v: '+5', t: '月线中枢内震荡，方向中性' }); }
-      else { s -= 4; detail.push({ k: '月线', v: '-4', t: '月线位于中枢下方且笔向下，逆势风险' }); }
-      if (m.buy && m.buy.grade) { s += 3; detail.push({ k: '月线', v: '+3', t: '月线出现 ' + m.buy.type + ' 买点' }); }
-    }
-    if (w) {
-      if (w.dir > 0) { s += 10; detail.push({ k: '周线', v: '+10', t: '周线笔向上，中级趋势配合' }); }
-      else if (w.position === 'inside') { s += 3; detail.push({ k: '周线', v: '+3', t: '周线中枢内震荡' }); }
-      else { s -= 3; detail.push({ k: '周线', v: '-3', t: '周线向下且在中枢下方' }); }
-      if (w.buy && w.buy.grade >= 2) { s += 4; detail.push({ k: '周线', v: '+4', t: '周线 ' + w.buy.type + ' 买点成立' }); }
-    }
-    if (d) {
-      var g = d.buy && d.buy.grade ? d.buy.grade : 0;
-      if (g === 3) { s += 15; detail.push({ k: '日线', v: '+15', t: '日线三买：回调不进中枢，结构最健康' }); }
-      else if (g === 2) { s += 11; detail.push({ k: '日线', v: '+11', t: '日线二买：不破前低' }); }
-      else if (g === 1) { s += 5; detail.push({ k: '日线', v: '+5', t: '日线一买：背驰反弹，需次级别确认' }); }
-      else if (d.buy && d.buy.running) { s += 3; detail.push({ k: '日线', v: '+3', t: '日线笔向上运行中，等回调不破' }); }
-      else { s -= 3; detail.push({ k: '日线', v: '-3', t: '日线无买点，结构走弱' }); }
-
-      if (d.position === 'above') { s += 4; detail.push({ k: '日线', v: '+4', t: '价格站上日线中枢上沿，强势区' }); }
-      if (d.diverg && d.diverg.type === 'top') { s -= 5; detail.push({ k: '日线', v: '-5', t: '日线顶背驰，上攻动能衰竭' }); }
-    }
-    var structure = clamp(s, 0, 40);
-    detail.push({ k: '结构合计', v: structure + '/40', t: '月→周→日 三级结构联立得分' });
-
-    /* 2. 量价分（25） */
-    var v = 12.5;
-    if (wy) {
-      v += wy.score / 8;
-      if (wy.bullCount > wy.bearCount) { v += 2; detail.push({ k: '威科夫', v: '+2', t: '多头量价事件占优（' + wy.bullCount + ':' + wy.bearCount + '）' }); }
-      else if (wy.bearCount > wy.bullCount) { v -= 2; detail.push({ k: '威科夫', v: '-2', t: '空头量价事件占优（' + wy.bullCount + ':' + wy.bearCount + '）' }); }
-      if (wy.phase === 'accumulation') { v += 3; detail.push({ k: '威科夫', v: '+3', t: '处于吸筹阶段：' + wy.phaseText }); }
-      if (wy.phase === 'distribution') { v -= 4; detail.push({ k: '威科夫', v: '-4', t: '处于派发阶段：' + wy.phaseText }); }
-      var vr = wy.volRatio;
-      if (vr >= 1.2 && vr <= 2.5) { v += 2; detail.push({ k: '量比', v: '+2', t: '量比 ' + vr.toFixed(2) + '，温和放量' }); }
-      else if (vr > 4) { v -= 3; detail.push({ k: '量比', v: '-3', t: '量比 ' + vr.toFixed(2) + '，巨量多为分歧' }); }
-    }
-    var volume = clamp(v, 0, 25);
-
-    /* 3. 动量分（20）：相对 20/60 日涨幅，由 attachMomentum 预先算好 */
-    var mom = 10, m20 = it._chg20, m60 = it._chg60;
-    if (m20 != null) {
-      mom += clamp(m20 / 2, -6, 6);
-      detail.push({ k: '动量', v: (m20 >= 0 ? '+' : '') + (m20 / 2).toFixed(1), t: '近20日涨幅 ' + m20.toFixed(1) + '%' });
-    }
-    if (m60 != null) {
-      mom += clamp(m60 / 4, -4, 4);
-      detail.push({ k: '动量', v: (m60 >= 0 ? '+' : '') + (m60 / 4).toFixed(1), t: '近60日涨幅 ' + m60.toFixed(1) + '%' });
-    }
-    var momentum = clamp(mom, 0, 20);
-
-    /* 4. 资金分（15） */
-    var fund = 7.5;
-    if (it.mainNet != null && it.amount) {
-      var ratio = it.mainNet / it.amount;
-      fund += clamp(ratio * 30, -7.5, 7.5);
-      detail.push({ k: '资金', v: (ratio >= 0 ? '+' : '') + (clamp(ratio * 30, -7.5, 7.5)).toFixed(1), t: '主力净流入占成交额 ' + (ratio * 100).toFixed(1) + '%' });
-    } else {
-      detail.push({ k: '资金', v: '±0', t: '无主力资金数据，按中位计' });
-    }
-    var money = clamp(fund, 0, 15);
-
-    /* 5. 风险分（12 起，盈亏比优良可加到 15，风险项逐条扣） */
-    var risk = 12;
-    if (p.riskPct != null) {
-      if (p.riskPct > 8) { risk -= 6; detail.push({ k: '风险', v: '-6', t: '止损距离 ' + p.riskPct.toFixed(1) + '%，单笔风险过大' }); }
-      else if (p.riskPct > 5) { risk -= 3; detail.push({ k: '风险', v: '-3', t: '止损距离 ' + p.riskPct.toFixed(1) + '%，偏高' }); }
-      else { detail.push({ k: '风险', v: '0', t: '止损距离 ' + p.riskPct.toFixed(1) + '%，可控' }); }
-    }
-    if (it.atr != null && it.price) {
-      var atrPct = it.atr / it.price * 100;
-      if (atrPct > 6) { risk -= 4; detail.push({ k: '风险', v: '-4', t: '日均波动 ' + atrPct.toFixed(1) + '%，波动过大' }); }
-    }
-    if (it.pct != null && it.pct > CFG.MAX_RISE) { risk -= 3; detail.push({ k: '风险', v: '-3', t: '当日涨幅 ' + it.pct.toFixed(1) + '%，追高风险' }); }
-    if (it.pct != null && it.pct > 0 && it.pct >= (it.code.indexOf('sz30') === 0 || it.code.indexOf('sh688') === 0 ? CFG.LIMIT_UP_GEM : CFG.LIMIT_UP_MAIN)) {
-      risk -= 5; detail.push({ k: '风险', v: '-5', t: '已涨停，次日不可控且大概率买不进' });
-    }
-    /* 盈亏比：买区贴着压力时，结构再好也没有可赚空间 */
-    if (p.rr != null) {
-      if (p.rr >= 2) { risk += 3; detail.push({ k: '盈亏比', v: '+3', t: '盈亏比 ' + p.rr.toFixed(2) + '，赔率优良' }); }
-      else if (p.rr >= 1.5) { risk += 1; detail.push({ k: '盈亏比', v: '+1', t: '盈亏比 ' + p.rr.toFixed(2) + '，可接受' }); }
-      else if (p.rr < 0.9) { risk -= 8; detail.push({ k: '盈亏比', v: '-8', t: '盈亏比仅 ' + p.rr.toFixed(2) + '，买区已贴压力，无交易价值' }); }
-      else if (p.rr < 1.2) { risk -= 4; detail.push({ k: '盈亏比', v: '-4', t: '盈亏比 ' + p.rr.toFixed(2) + '，空间不足' }); }
-      else { detail.push({ k: '盈亏比', v: '0', t: '盈亏比 ' + p.rr.toFixed(2) }); }
-    }
-    risk = clamp(risk, 0, 15);
-
-    var total = Math.round(structure + volume + momentum + money + risk);
-
-    /* 等级：按四级联立的实际满足数 */
-    var lv = 0;
-    if (m && m.dir > 0) lv++;
-    if (w && w.dir > 0) lv++;
-    if (d && d.buy && d.buy.grade >= 2) lv++;
-    if (d && d.position === 'above') lv++; else if (d && d.buy && d.buy.grade >= 3) lv++;
-    var grade = lv >= 4 ? 'A' : lv === 3 ? 'B' : lv === 2 ? 'C' : 'D';
-    var gradeText = { A: '四级共振', B: '三级配合', C: '两级确认', D: '结构不足' }[grade];
-
-    return {
-      total: total, structure: structure, volume: volume, momentum: momentum,
-      money: money, risk: risk, detail: detail, grade: grade, gradeText: gradeText, levelHit: lv,
-    };
+    return Model.score(it);
   }
 
   /* 资金流与量比回填。

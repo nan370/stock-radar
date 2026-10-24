@@ -238,8 +238,11 @@
         '<span class="v ' + (e.dir > 0 ? 'p' : 'n') + '">' + (e.dir > 0 ? '多' : '空') + '</span>' +
         '<span class="t"><b>' + esc(e.name) + '</b><br>' + esc(e.detail) + '</span></div>';
     }).join('') : '<div class="ev"><span class="k">事件</span><span class="t">近 5 日无显著量价事件</span></div>';
-    return '<div class="ev"><span class="k">阶段</span><span class="t"><b>' + esc(w.phaseText) + '</b>｜量比 ' + w.volRatio.toFixed(2) +
-      '｜区间分位 ' + (w.pos * 100).toFixed(0) + '%</span></div>' + evs;
+    var cy = w.cycle;
+    return '<div class="ev"><span class="k">阶段</span><span class="t"><b>' + esc(cy ? cy.name : w.phaseText) + '</b>｜量比 ' + w.volRatio.toFixed(2) +
+      '｜区间分位 ' + (w.pos * 100).toFixed(0) + '%</span></div>' +
+      (cy ? '<div class="ev"><span class="k">判据</span><span class="t">' + esc((cy.evidence || []).join('；')) + '</span></div>' : '') +
+      evs;
   }
 
   function detailHtml(it) {
@@ -266,7 +269,8 @@
       '</div>' +
       '<div class="detail-col">' +
         '<h4>评分明细<span class="sm">结构' + s.structure.toFixed(0) + ' / 量价' + s.volume.toFixed(0) +
-          ' / 动量' + s.momentum.toFixed(0) + ' / 资金' + s.money.toFixed(0) + ' / 风险' + s.risk.toFixed(0) + '</span></h4>' +
+          ' / 动量' + s.momentum.toFixed(0) + ' / 资金' + (s.money == null ? '缺' : s.money.toFixed(0)) +
+          ' / 风险' + s.risk.toFixed(0) + (s.moneyMissing ? '（资金缺数据，总分按其余四项折算）' : '') + '</span></h4>' +
         detailRows +
         '<h4 style="margin-top:14px">交易计划</h4>' + planHtml(it) +
         '<div class="links">' +
@@ -586,6 +590,92 @@
       (n ? '<div class="n">' + n + '</div>' : '') + '</div>';
   }
 
+  /* ------------------------------ 分数分层校验 ------------------------------
+   * 打分权重以前是「看起来合理」就定下了，没有任何数据支持。这里用同一批
+   * 历史回测，按综合分把候选池切成 5 桶，看每桶的实际期望收益：
+   *   如果高分桶期望更高、且大体单调，说明权重方向是对的；
+   *   如果不单调甚至反向，说明权重需要重估 —— 页面会直接把这个结论写出来，
+   *   而不是继续展示一个「看起来 80 分很靠谱」的数字。
+   * 局限同样写在页面上：样本内、样本是当天筛出来的票、每桶标的数很少。 */
+  function renderBuckets(res) {
+    var box = $('#btBucket');
+    if (!box) return;
+    var rows = (res.rows || []).filter(function (r) { return r._score != null && r.all && r.all.n; });
+    if (rows.length < 5) { box.innerHTML = '<p class="bt-note">样本不足 5 只，无法做分数分层校验。</p>'; return; }
+
+    var DEFS = [
+      { k: '≥ 70 分', lo: 70, hi: 999 },
+      { k: '60 ~ 69', lo: 60, hi: 70 },
+      { k: '50 ~ 59', lo: 50, hi: 60 },
+      { k: '42 ~ 49', lo: 42, hi: 50 },
+      { k: '< 42', lo: -999, hi: 42 },
+    ];
+
+    function agg(list) {
+      var trades = [];
+      list.forEach(function (r) { trades = trades.concat(r.allTrades || []); });
+      if (!trades.length) return null;
+      var wins = trades.filter(function (t) { return t.netPct > 0; });
+      var sum = trades.reduce(function (a, t) { return a + t.netPct; }, 0);
+      return {
+        n: list.length, trades: trades.length,
+        winRate: wins.length / trades.length,
+        exp: sum / trades.length,
+      };
+    }
+
+    var all = agg(rows);
+    var buckets = DEFS.map(function (d) {
+      var list = rows.filter(function (r) { return r._score >= d.lo && r._score < d.hi; });
+      return { k: d.k, s: agg(list) };
+    }).filter(function (b) { return b.s; });
+
+    if (!all || buckets.length < 2) {
+      box.innerHTML = '<p class="bt-note">分层后没有可统计的成交，暂时无法校验。</p>';
+      return;
+    }
+
+    var body = buckets.map(function (b) {
+      var diff = b.s.exp - all.exp;
+      return '<tr><td>' + b.k + '</td><td class="num">' + b.s.n + '</td><td class="num">' + b.s.trades + '</td>' +
+        '<td class="num">' + (b.s.winRate * 100).toFixed(0) + '%</td>' +
+        '<td class="num ' + (b.s.exp > 0 ? 'good' : 'bad') + '">' + (b.s.exp > 0 ? '+' : '') + b.s.exp.toFixed(2) + '%</td>' +
+        '<td class="num">' + (diff >= 0 ? '+' : '') + diff.toFixed(2) + '%</td></tr>';
+    }).join('');
+
+    /* 单调性：用「桶序号 × 期望」的秩相关粗略判断方向是否一致。
+     * 桶序号 0 是最高分，所以同向时相关系数应为负。 */
+    var xs = buckets.map(function (b, i) { return i; });
+    var ys = buckets.map(function (b) { return b.s.exp; });
+    var mx = xs.reduce(function (a, b) { return a + b; }, 0) / xs.length;
+    var my = ys.reduce(function (a, b) { return a + b; }, 0) / ys.length;
+    var num = 0, dx = 0, dy = 0;
+    xs.forEach(function (x, i) {
+      num += (x - mx) * (ys[i] - my);
+      dx += (x - mx) * (x - mx);
+      dy += (ys[i] - my) * (ys[i] - my);
+    });
+    var rho = (dx > 0 && dy > 0) ? num / Math.sqrt(dx * dy) : 0;
+
+    var verdict = rho <= -0.5
+      ? '<b>分层基本单调</b>：分数越高的桶，历史每笔期望越高 —— 权重方向与数据一致。'
+      : rho >= 0.3
+        ? '<b>分层反向</b>：分数越高的桶期望反而越低。这通常意味着样本期这类结构失效，或权重把「已经涨完」当成了「结构好」，入榜名单要打折看。'
+        : '<b>分层不单调</b>：高分区没有明显优势，说明权重里有一项在拖后腿，需要重估（下一步该做的是逐项去权重看边际贡献）。';
+
+    box.innerHTML =
+      '<div class="bt-year" style="margin-top:12px"><b>分数分层校验</b>　' +
+      '全样本基准：' + all.trades + ' 笔、每笔期望 ' + (all.exp > 0 ? '+' : '') + all.exp.toFixed(2) + '%、胜率 ' + (all.winRate * 100).toFixed(0) + '%</div>' +
+      '<table class="bucket-table"><thead><tr><th>综合分桶</th><th class="num">标的</th><th class="num">成交笔数</th>' +
+      '<th class="num">胜率</th><th class="num">每笔期望</th><th class="num">相对基准</th></tr></thead><tbody>' +
+      body + '</tbody></table>' +
+      '<p class="bt-note" style="margin-top:10px">' + verdict +
+      '　秩相关 ' + rho.toFixed(2) + '（-1 表示完全单调：分数越高越好）。' +
+      '注意：这是<b>样本内</b>校验，样本只覆盖本次候选池里拉到 260 根以上日线的 ' + rows.length +
+      ' 只票，且这些票本身就是今天量价筛出来的，存在选择偏差；每桶成交笔数少，差异可能来自运气。' +
+      '它的用途是「发现自己是不是在自欺」，不是收益承诺。</p>';
+  }
+
   function renderBacktest(res) {
     if (!res || !res.summary || !res.summary.all || !res.summary.all.n) {
       $('#btBlock').style.display = 'none';
@@ -631,6 +721,8 @@
       '<b>级别过滤：</b>' + (better
         ? '叠加月周过滤后期望收益提升、回撤下降，说明上级别方向确实过滤掉了部分逆势交易。'
         : '叠加月周过滤后收益未提升，说明当前样本下级别过滤的增益有限，使用时以结构本身为主、级别方向作参考。');
+
+    renderBuckets(res);
 
     $$('.bt-tab').forEach(function (b) {
       b.classList.toggle('active', b.getAttribute('data-set') === state.btSet);
@@ -719,6 +811,14 @@
       if (!ready.length) { $('#btHint').textContent = '历史数据不足，无法回测'; return; }
       var res = Backtest.run(ready);
       res.sampleSize = ready.length;
+      /* 把综合分带回回测行上：下面要按分数分桶，检验「分高的历史表现是不是真的更好」。
+       * 这一步是给打分权重做验证 —— 之前五个权重是拍出来的，从没被数据检验过。 */
+      var byCode = {};
+      ready.forEach(function (it) { byCode[it.code] = it; });
+      (res.rows || []).forEach(function (r) {
+        var it = byCode[r.code];
+        r._score = it && it.score ? it.score.total : null;
+      });
       state.bt = res;
       renderBacktest(res);
     });

@@ -579,3 +579,186 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
   .ws-card{padding:16px}
   .ws-sheet{padding:12px}
 }
+
+/* ============================================================
+ * 2026-10-24 新增：统一模型（共识 / 交易计划 / 评分 / 结构）
+ * 配色分工：涨跌只占红绿；支撑/压力改用青/橙，避免与涨跌语义打架。
+ * ============================================================ */
+:root{
+  --sup:#0b7285;
+  --sup-bg:#e3fafc;
+  --res:#d9480f;
+  --res-bg:#fff4e6;
+}
+.lv-sup-text{color:var(--sup);font-weight:700}
+.lv-res-text{color:var(--res);font-weight:700}
+.lv-badge.sup{background:var(--sup-bg);color:var(--sup)}
+.lv-badge.res{background:var(--res-bg);color:var(--res)}
+
+/* —— 模型共识 —— */
+.consensus{
+  background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  padding:16px 20px;box-shadow:var(--shadow);margin-bottom:20px;border-left:3px solid #adb5bd;
+}
+.consensus.bull{border-left-color:var(--up)}
+.consensus.bear{border-left-color:var(--down)}
+.cons-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.cons-head b{font-size:16px}
+.cons-head span{font-size:12px;color:var(--sub)}
+.cons-foot{font-size:11.5px;color:var(--sub);line-height:1.7;margin:-4px 0 10px}
+.cons-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.cs-vote{
+  background:#fafbfc;border:1px solid var(--line);border-radius:9px;padding:11px 13px;
+  display:flex;flex-direction:column;gap:3px;
+}
+.cs-vote.bull{background:#fff5f5;border-color:#ffc9c9}
+.cs-vote.bear{background:#ebfbee;border-color:#b2f2bb}
+.cs-vote .cv-k{font-size:11.5px;color:var(--sub)}
+.cs-vote .cv-v{font-size:15px}
+.cs-vote.bull .cv-v{color:var(--up)}
+.cs-vote.bear .cv-v{color:var(--down)}
+.cs-vote .cv-t{font-size:11.5px;color:#6b7280;line-height:1.5}
+
+/* —— 交易计划 —— */
+.plan-card{
+  background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  padding:18px 20px;box-shadow:var(--shadow);
+}
+.plan-verdict{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.plan-verdict .plan-state{margin-bottom:0}
+.plan-state{
+  display:inline-block;font-size:12.5px;font-weight:600;padding:4px 11px;border-radius:6px;margin-bottom:14px;
+}
+.plan-state.ok{background:#ebfbee;color:#2b8a3e}
+.plan-state.warn{background:#fff3bf;color:#b8860b}
+.plan-state.bad{background:#ffe3e3;color:#c92a2a}
+.plan-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border-radius:9px;overflow:hidden}
+.pg-item{background:var(--card);padding:12px 14px;display:flex;flex-direction:column;gap:3px}
+.pg-k{font-size:11.5px;color:var(--sub)}
+.pg-v{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
+.pg-v.up{color:var(--up)}.pg-v.down{color:var(--down)}
+.pg-n{font-size:11px;color:#868e96;line-height:1.5}
+.plan-bar{position:relative;height:26px;margin:16px 0 6px}
+.pb-track{position:absolute;left:0;right:0;top:11px;height:4px;border-radius:2px;background:#eef0f3}
+.pb-range{position:absolute;top:9px;height:8px;border-radius:4px;background:linear-gradient(90deg,#63b3ed,#4a90d9)}
+.pb-price{position:absolute;top:2px;width:2px;height:22px;background:#212529;border-radius:1px}
+.pb-price::after{content:'现价';position:absolute;top:-13px;left:50%;transform:translateX(-50%);
+  font-size:9.5px;color:#495057;white-space:nowrap}
+.plan-legend{display:flex;justify-content:space-between;font-size:11px;color:var(--sub);margin-bottom:12px}
+.plan-note{font-size:12px;color:var(--sub);line-height:1.75;padding-top:11px;border-top:1px dashed var(--line)}
+
+/* —— 评分 —— */
+.score-head{display:flex;align-items:baseline;gap:14px;padding:16px 18px;border-bottom:1px solid var(--line)}
+.score-big{font-size:38px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums;color:var(--accent)}
+.score-meta{display:flex;flex-direction:column;gap:2px;font-size:11.5px;color:var(--sub)}
+.grade{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;padding:0 5px;
+  border-radius:5px;font-size:11px;font-weight:700;background:#f1f3f5;color:#495057}
+.grade.A{background:#ffe3e3;color:#c92a2a}
+.grade.B{background:#fff4e6;color:#d9480f}
+.grade.C{background:#e7f5ff;color:#1971c2}
+.grade.D{background:#f1f3f5;color:#868e96}
+.tag.grade-tag.A{background:#ffe3e3;color:#c92a2a}
+.tag.grade-tag.B{background:#fff4e6;color:#d9480f}
+.tag.grade-tag.C{background:#e7f5ff;color:#1971c2}
+.tag.grade-tag.D{background:#f1f3f5;color:#868e96}
+.score-bars{padding:12px 18px 16px;display:flex;flex-direction:column;gap:9px}
+.sb-row{display:flex;align-items:center;gap:10px}
+.sb-name{width:34px;font-size:12px;color:var(--sub);flex:none}
+.sb-track{flex:1;height:8px;border-radius:4px;background:#eef0f3;overflow:hidden}
+.sb-fill{display:block;height:100%;border-radius:4px;background:#4a90d9;transition:width .35s}
+.sb-fill.structure{background:#e03131}
+.sb-fill.volume{background:#f59f00}
+.sb-fill.momentum{background:#4a90d9}
+.sb-fill.money{background:#0b7285}
+.sb-fill.risk{background:#7048e8}
+.sb-val{width:62px;text-align:right;font-size:12.5px;font-variant-numeric:tabular-nums}
+.sb-val em{font-style:normal;color:#adb5bd;font-size:10.5px}
+.sb-row.muted .sb-name,.sb-row.muted .sb-val{color:#adb5bd}
+.sb-row.muted .sb-val{font-size:11px}
+
+/* —— 结构 / 威科夫 —— */
+.cs-card{padding:6px 0}
+.cs-lv{display:flex;align-items:center;gap:12px;padding:9px 16px;border-bottom:1px solid #f8f9fa;font-size:13px}
+.cs-lv b{width:38px;color:var(--sub);font-weight:600;font-size:12px}
+.cs-lv.muted span{color:#adb5bd}
+.mini-tag{font-size:10.5px;padding:1px 7px;border-radius:4px;background:#ffe3e3;color:#c92a2a;font-weight:600}
+.cs-foot{padding:12px 16px;border-top:1px solid #f1f3f5;display:flex;flex-direction:column;gap:5px}
+.cs-foot p{font-size:12.5px;color:#495057;line-height:1.7}
+.cs-foot p.muted{color:#adb5bd}
+.cs-warn{color:#b8860b!important}
+.cs-buy{color:#2b8a3e!important}
+.cy-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:12px 16px 6px;flex-wrap:wrap}
+.cy-head b{font-size:14px}
+.cy-pos{font-size:11.5px;color:var(--sub)}
+.cy-text{padding:0 16px 10px;font-size:13px;color:#374151;line-height:1.75}
+.cy-ev{list-style:none;padding:0 16px 12px}
+.cy-ev li{font-size:12px;color:#6b7280;line-height:1.7;padding-left:12px;position:relative}
+.cy-ev li::before{content:'·';position:absolute;left:2px;color:#adb5bd;font-weight:700}
+.ev-list{list-style:none;border-top:1px solid #f1f3f5}
+.ev-list li{padding:10px 16px;border-bottom:1px solid #f8f9fa;font-size:12.5px;line-height:1.7;position:relative}
+.ev-list li:last-child{border-bottom:none}
+.ev-list li b{font-size:12.5px}
+.ev-list li.ev-bull b{color:var(--up)}
+.ev-list li.ev-bear b{color:var(--down)}
+.ev-list .ev-d{font-size:11px;color:#adb5bd;margin-left:8px}
+.ev-list p{color:#6b7280;font-size:12px;margin-top:2px}
+.ev-list li.ev-none{color:#868e96;font-size:12px}
+.chart-note{font-size:11.5px;color:var(--sub);line-height:1.7;margin-top:8px;padding-top:10px;border-top:1px dashed var(--line)}
+.chart-note b{color:#495057}
+.caliber-line{font-size:12px;color:var(--sub);line-height:1.75;padding:12px 18px;border-top:1px dashed var(--line)}
+.head-side .kv small{font-size:10.5px;color:#adb5bd;font-weight:400}
+
+/* ============================================================
+ * 首页市场温度条
+ * ============================================================ */
+.mtemp{
+  background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  padding:16px 20px;box-shadow:var(--shadow);margin-bottom:22px;
+  display:flex;gap:26px;align-items:center;flex-wrap:wrap;
+}
+.mt-left{display:flex;align-items:baseline;gap:10px;min-width:170px}
+.mt-score{font-size:34px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+.mt-label{font-size:13px;font-weight:600;padding:3px 9px;border-radius:5px;background:#f1f3f5;color:#495057}
+.mt-label.hot{background:#ffe3e3;color:#c92a2a}
+.mt-label.warm{background:#fff4e6;color:#d9480f}
+.mt-label.cool{background:#e7f5ff;color:#1971c2}
+.mt-label.cold{background:#d3f9d8;color:#2b8a3e}
+.mt-mid{flex:1;min-width:230px}
+.mt-scale{position:relative;height:10px;border-radius:5px;overflow:hidden;
+  background:linear-gradient(90deg,#8ce99a,#a9e34b,#ffd43b,#ff922b,#ff6b6b)}
+.mt-pin{position:absolute;top:-3px;width:4px;height:16px;border-radius:2px;background:#212529;
+  box-shadow:0 0 0 2px #fff;transition:left .4s}
+.mt-marks{display:flex;justify-content:space-between;font-size:10.5px;color:#adb5bd;margin-top:5px}
+.mt-stats{display:flex;gap:18px;flex-wrap:wrap}
+.mt-stat{display:flex;flex-direction:column;gap:1px;min-width:62px}
+.mt-stat span{font-size:11px;color:var(--sub)}
+.mt-stat b{font-size:15px;font-variant-numeric:tabular-nums}
+.mt-wide{flex-basis:100%}
+.mt-bar{display:flex;height:7px;border-radius:4px;overflow:hidden;background:#eef0f3}
+.mt-bar i{display:block;height:100%}
+.mt-bar i.up{background:var(--up)}
+.mt-bar i.flat{background:#ced4da}
+.mt-bar i.down{background:var(--down)}
+.mt-note{font-size:11.5px;color:var(--sub);margin-top:7px;line-height:1.65}
+
+/* 选股页：分数分层校验表 */
+.bucket-wrap{margin-top:14px}
+.bucket-table{width:100%;border-collapse:collapse;font-size:12.5px}
+.bucket-table th{text-align:left;padding:8px 10px;font-size:11.5px;color:var(--sub);border-bottom:1px solid #e6e8ec;white-space:nowrap}
+.bucket-table td{padding:8px 10px;border-bottom:1px solid #f1f3f5}
+.bucket-table tr:last-child td{border-bottom:none}
+.bucket-table .good{color:#2b8a3e;font-weight:600}
+.bucket-table .bad{color:#c92a2a;font-weight:600}
+
+@media(max-width:900px){
+  .cons-grid{grid-template-columns:1fr}
+  .plan-grid{grid-template-columns:1fr 1fr}
+  .mtemp{gap:14px}
+}
+@media(max-width:640px){
+  .plan-grid{grid-template-columns:1fr}
+  .score-head{padding:12px 14px}
+  .score-big{font-size:30px}
+  .mt-left{min-width:0}
+  .mt-mid{min-width:0;flex-basis:100%}
+}

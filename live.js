@@ -459,6 +459,12 @@ const Live = (function () {
       signals: signals,
       anomalies: anomalies,
       news: ns,
+      /* 市场宽度原本只喂给信号文字，首页看不见。这里原样带出去，
+       * 由 app.js 画成温度条 —— 同一个数字不要在两处各算一遍。 */
+      breadth: br ? {
+        total: br.total, up: br.up, down: br.down, flat: br.flat,
+        limitUp: pUp.n || 0, limitDown: pDn.n || 0,
+      } : null,
       hint: {
         signal: '实时推导 · 更新 ' + nowHM() + ' · 共 ' + signals.length + ' 项',
         anomaly: '实时推导 · 更新 ' + nowHM() + ' · ' + anomalies.length + ' 项异动',

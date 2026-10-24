@@ -11,8 +11,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="股票看盘">
-<link rel="stylesheet" href="styles.css?v=20261023c">
-<script src="sharelink.js?v=20261023c"></script>
+<link rel="stylesheet" href="styles.css?v=20261024g">
+<script src="sharelink.js?v=20261024g"></script>
 <link rel="stylesheet" href="screen.css">
 </head>
 <body>
@@ -121,6 +121,7 @@
       </div>
       <div class="bt-grid" id="btGrid"></div>
       <div class="bt-year" id="btYear"></div>
+      <div class="bucket-wrap" id="btBucket"></div>
       <div class="bt-note" id="btNote" style="margin-top:14px"></div>
     </div>
   </section>
@@ -135,9 +136,11 @@
       <p><b>结构层级：</b>月线 → 周线 → 日线 → 30 分钟四级串联。月线笔方向决定能不能做，周线结构决定做多大，日线买点决定在哪买，30 分钟用于入场时机。本引擎做「笔 → 中枢」两级，不做线段与走势类型递归——那部分参数敏感且对选股无增量贡献。</p>
       <p><b>送样口径：</b>威科夫事件（Spring / Upthrust / No Demand / No Supply / Climax / 放量滞涨 / 量价背离）全部为阈值判定，在最近 5 根K线窗口内检测并按距今天数衰减。</p>
       <p><b>筛选口径：</b>全市场约 5900 只不可能逐只拉多周期K线（约 2.4 万次请求），因此先用量价快照粗筛到 60 只候选（强势组 45 + 缩量回踩组 15），再逐只精算。候选池不覆盖全市场，会漏掉部分冷门标的。</p>
-      <p><b>入榜条件：</b>综合分 ≥ 45、盈亏比 ≥ 1.2、日线结构未破坏、四级结构至少满足两级。四个条件任一不满足只进观察名单。<b>高分不等于可买</b>：观察名单里常有 70~85 分的票卡在盈亏比上，那是上方压力太近、空间不够赔率，不是评分算错了。</p>
+      <p><b>入榜条件：</b>综合分 ≥ 42（100 分制）、盈亏比 ≥ 1.2、日线结构未破坏、四级结构至少满足两级。四个条件任一不满足只进观察名单。<b>高分不等于可买</b>：观察名单里常有 70~85 分的票卡在盈亏比上，那是上方压力太近、空间不够赔率，不是评分算错了。</p>
       <p><b>买卖价口径：</b>买入区间宽度上限 3%，上沿不追过现价 1.5%、也不超过最近压力；止损取「跌破买点结构」与「跌破日线中枢下沿」中更近的一个，且距离被限制在 1.1 倍 ATR 至 12% 之间；目标位为最近压力，上方无压力时按中枢高度投影，上限取 min(最近压力, 6×ATR, +15%)。盈亏比 = (目标 − 区间中值) / (区间中值 − 止损)。</p>
       <p><b>回测口径：</b>信号确认后<b>次日开盘</b>成交（绝不用信号日收盘价，那是未来函数），且入场价距买点超过 4% 视为追高、直接放弃。费用按往返 0.2% 计（佣金 + 印花 + 滑点），止损为信号笔低点下方 1.5%，止盈 2R，最长持有 20 个交易日。一字板按买不进跳过。</p>
+      <p><b>基本面缺口（重要）：</b>本页只用价量与资金流，<b>没有财报、估值、行业景气任何基本面字段</b>。所以它能回答「这只票现在的价量结构适不适合买」，回答不了「这家公司值不值得持有」。真正的硬闸只能是流动性（成交额 ≥ 8000 万、流通市值 ≥ 20 亿）与排除 ST/退市/新股，剩下的判断必须自己补基本面。不要把一个 70 分的价量评分当成买入许可。</p>
+      <p><b>打分权重的自检：</b>五个权重（结构 35 / 量价 22 / 动量 17 / 资金 13 / 风险 13）合计 100，是经验值而非拟合结果 —— 旧版五项原始满分是 40+25+20+15+15=115，直接相加会出现「96 分」这种超出 100 的分数，已改为按原始分归一化。每次回测后页面会给出<b>分数分层校验表</b>：按综合分把候选池切 5 桶，看高分桶的历史每笔期望是否真的更高，并给出秩相关。若分层反向或不单调，说明权重需要重估，页面会直接写出来而不是藏着。</p>
       <p><b>样本局限：</b>回测标的仅限本次入榜个股，不是全市场样本；区间约 3 年，含一轮下跌与一轮反弹。参数未做样本外调优，所有统计均为<b>样本内</b>结果，不代表未来收益。单只标的信号数常在 5–10 笔，统计不具显著性，请以汇总结果为准。</p>
       <p><b>免责：</b>本页所有内容由公开行情按固定规则计算得出，仅用于研究与复盘，不构成任何投资建议。市场有风险，决策请自行判断。</p>
     </div>
@@ -149,11 +152,12 @@
   </footer>
 </main>
 
-<script src="feeds.js?v=20261023c"></script>
-<script src="chan.js?v=20261023c"></script>
-<script src="wyckoff.js?v=20261023c"></script>
-<script src="screener.js?v=20261023c"></script>
-<script src="backtest.js?v=20261023c"></script>
-<script src="screen.js?v=20261023c"></script>
+<script src="feeds.js?v=20261024g"></script>
+<script src="chan.js?v=20261024g"></script>
+<script src="wyckoff.js?v=20261024g"></script>
+<script src="model.js?v=20261024g"></script>
+<script src="screener.js?v=20261024g"></script>
+<script src="backtest.js?v=20261024g"></script>
+<script src="screen.js?v=20261024g"></script>
 </body>
 </html>

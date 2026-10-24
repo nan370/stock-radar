@@ -184,13 +184,30 @@ async function loadAll(force) {
   renderGainersLosers();
 
   /* 关键信号 / 板块异动 / 财经资讯：全部实时推导 */
-  let live = { signals: [], anomalies: [], news: [], hint: {} };
+  let live = { signals: [], anomalies: [], news: [], hint: {}, breadth: null };
   try {
     live = await Live.build({ idxRows: idxRows, secRows: secRows });
   } catch (e) {
     console.error('[Live] 推导失败', e && e.message);
   }
   NEWS = live.news || [];
+  /* 个股涨跌家数偶尔取不到（东财宽度接口间歇性 ERR_EMPTY_RESPONSE）。
+   * 这时不能整条温度直接罢工 —— 退一步用板块涨跌家数做同构替代，
+   * 并在页面上标明「用的是板块口径」，而不是让用户以为今天没有数据。 */
+  let breadth = live.breadth;
+  if (!breadth && SECTORS.length) {
+    const ps = SECTORS.map((x) => sectorNums(x).pct).filter((v) => v != null);
+    if (ps.length) {
+      breadth = {
+        total: ps.length,
+        up: ps.filter((v) => v > 0).length,
+        down: ps.filter((v) => v < 0).length,
+        flat: ps.filter((v) => v === 0).length,
+        limitUp: 0, limitDown: 0, proxy: true,
+      };
+    }
+  }
+  renderMTemp(breadth, idxRows);
   renderAnomalies(live.anomalies || []);
   renderSignals(live.signals || []);
   renderNews('全部');
@@ -270,18 +287,103 @@ function renderSectors(type) {
     </tr>`).join('') || '<tr><td colspan="6" class="empty">暂无数据</td></tr>';
 }
 
+/* 领涨/领跌板块：只列板块本身（名称 + 涨跌幅，类型标签视名称而定）。
+ * 曾经在这里挂过「板块内市值最大 / 涨跌幅最大的两只股票」，因所有公开数据源
+ * 都拿不到板块成分（东财 push2 对机房 IP 段 WAF 403、同花顺反爬 401、
+ * 新浪板块名匹配率过低），已整体撤除，不做假数据。 */
 function renderGainersLosers() {
   const all = SECTORS.map((s) => ({ s, m: sectorNums(s) }));
+  /* 板块名里已经带「概念 / 行业 / 板块」时不再重复贴类型标签，
+   * 否则会出现「物理AI概念 [概念]」这种同词重复。 */
+  const tagOf = (s) => (s.name && String(s.name).indexOf(s.sector_type) >= 0
+    ? '' : `<span class="rank-tag">${esc(s.sector_type)}</span>`);
   const list = (arr, n) => arr.slice(0, n).map((x, i) => `
     <div class="rank-item">
       <span class="rank-no">${i + 1}</span>
-      <span class="rank-name">${esc(x.s.name)}<span class="rank-tag">${esc(x.s.sector_type)}</span></span>
+      <span class="rank-name">${esc(x.s.name)}${tagOf(x.s)}</span>
       <span class="rank-pct ${cls(x.m.pct)}">${pct(x.m.pct)}</span>
     </div>`).join('');
   const up = all.filter((x) => x.m.pct > 0).sort((a, b) => b.m.pct - a.m.pct);
   const dn = all.filter((x) => x.m.pct < 0).sort((a, b) => a.m.pct - b.m.pct);
   $('#gainers').innerHTML = list(up, 8) || '<div class="empty">' + (SECTORS.length ? '暂无领涨板块' : '板块数据获取失败，点右上角「刷新数据」重试') + '</div>';
   $('#losers').innerHTML = list(dn, 8) || '<div class="empty">' + (SECTORS.length ? '暂无领跌板块' : '板块数据获取失败，点右上角「刷新数据」重试') + '</div>';
+}
+
+/* ---------- 市场温度 ----------
+ * 把已经算出来的三个东西合成一个 0~100 的温度，让「今天能不能做」一眼可见：
+ *   涨跌家数占比（0~60）：最直接的市场宽度，权重最高；
+ *   涨停-跌停结构（0~20，中性 10）：反映情绪的两端有多极端；
+ *   主要指数平均涨幅（0~20）：把指数从 -2% ~ +2% 线性映射到 0~20。
+ * 中性市（涨跌各半、无涨跌停、指数平盘）恰好落在 50 分 —— 这条校准是刻意的，
+ * 否则温度条会长期偏向某一侧，看着像装饰。
+ * 注意：这里不重复请求任何接口，全部复用 Live.build 已有的结果。 */
+function renderMTemp(br, idxRows) {
+  const box = $('#mtemp');
+  if (!box) return;
+  if (!br || !br.total) {
+    box.innerHTML = '<div class="mt-note">个股涨跌家数与板块数据都没取到，温度暂无法计算。'
+      + '这不是页面坏了 —— 点右上角「刷新数据」重试即可。</div>';
+    return;
+  }
+
+  const amp = (br.up + br.down) || 1;
+  const upRatio = br.up / amp;
+  const lu = br.limitUp || 0, ld = br.limitDown || 0;
+  const pcts = (idxRows || []).map((i) => liveNums(i.code, i).pct).filter((v) => v != null && isFinite(v));
+  const idxPct = pcts.length ? pcts.reduce((a, b) => a + b, 0) / pcts.length : 0;
+
+  const sBreadth = upRatio * 60;
+  const sLimit = 10 + ((lu - ld) / (lu + ld + 2)) * 10;
+  const sIndex = Math.max(0, Math.min(20, (idxPct + 2) / 4 * 20));
+  const score = Math.round(Math.max(0, Math.min(100, sBreadth + sLimit + sIndex)));
+
+  let label = '中性', lab = '';
+  if (score >= 78) { label = '过热'; lab = 'hot'; }
+  else if (score >= 60) { label = '偏热'; lab = 'warm'; }
+  else if (score >= 44) { label = '中性'; lab = ''; }
+  else if (score >= 28) { label = '偏冷'; lab = 'cool'; }
+  else { label = '冰点'; lab = 'cold'; }
+
+  /* 成交额：沪深两市指数成交额相加（单位万元 → 亿） */
+  const amtWan = (nz((QUOTES['sh000001'] || {}).amountWan, 0) + nz((QUOTES['sz399001'] || {}).amountWan, 0));
+  const amtTxt = amtWan > 0 ? fmtAmount(amtWan) : '--';
+
+  const wUp = (br.up / br.total * 100).toFixed(1);
+  const wFlat = (br.flat / br.total * 100).toFixed(1);
+  const wDown = (br.down / br.total * 100).toFixed(1);
+
+  const advice = score >= 78
+    ? '情绪过热，追高风险大；手里有的可以持股，新开仓等回踩'
+    : score >= 60
+      ? '环境偏暖，可按计划做多，但只在回踩买点下手'
+      : score >= 44
+        ? '多空均衡，选股胜率一般，仓位控制在半仓以内'
+        : score >= 28
+          ? '环境偏冷，只做强势股的回踩，不做抄底'
+          : '冰点：普跌格局，空仓等右侧信号比抢反弹划算';
+
+  box.innerHTML = `
+    <div class="mt-left">
+      <b class="mt-score">${score}</b>
+      <span class="mt-label ${lab}">${label}</span>
+    </div>
+    <div class="mt-mid">
+      <div class="mt-scale"><i class="mt-pin" style="left:${Math.max(0, Math.min(99, score))}%"></i></div>
+      <div class="mt-marks"><span>冰点 0</span><span>偏冷 28</span><span>中性 50</span><span>偏热 60</span><span>过热 78</span></div>
+    </div>
+    <div class="mt-stats">
+      <div class="mt-stat"><span>${br.proxy ? '板块涨 / 跌' : '涨 / 跌'}</span><b><span class="pos">${br.up}</span> / <span class="neg">${br.down}</span></b></div>
+      <div class="mt-stat"><span>涨停 / 跌停</span><b><span class="pos">${lu}</span> / <span class="neg">${ld}</span></b></div>
+      <div class="mt-stat"><span>指数均涨</span><b class="${cls(idxPct)}">${pct(idxPct)}</b></div>
+      <div class="mt-stat"><span>两市成交</span><b>${amtTxt}</b></div>
+    </div>
+    <div class="mt-wide">
+      <div class="mt-bar">
+        <i class="up" style="width:${wUp}%"></i><i class="flat" style="width:${wFlat}%"></i><i class="down" style="width:${wDown}%"></i>
+      </div>
+      <p class="mt-note">上涨 ${br.up} ${br.proxy ? '个板块' : '家'}（${wUp}%）· 平盘 ${br.flat} ${br.proxy ? '个' : '家'}（${wFlat}%）· 下跌 ${br.down} ${br.proxy ? '个板块' : '家'}（${wDown}%），
+        覆盖 ${br.proxy ? '行业+概念板块共 ' : '沪深 '}${br.total} ${br.proxy ? '个（个股家数当日接口未返回，已用板块口径替代）' : '只'}。<b>${advice}</b>　温度口径：涨跌家数 60% + 涨跌停结构 20% + 指数涨幅 20%，中性校准在 50 分。</p>
+    </div>`;
 }
 
 const SIG_CN = { bullish: '看多', bearish: '看空', neutral: '中性' };

@@ -297,8 +297,8 @@ function parseEm(j) {
  * 首选腾讯：该域名对浏览器跨域开放，且沪深京三个板都能取到日K（东财 push2his
  * 在部分网络/设备上会被拦成 ERR_EMPTY_RESPONSE，故退为备选）。 */
 const KLINE_SRC = [
-  { url: (c) => 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get?param=' + c + ',day,,,140,qfq', parse: parseTx },
-  { url: (c) => 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=' + c + ',day,,,140,qfq', parse: parseTx },
+  { url: (c) => 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get?param=' + c + ',day,,,640,qfq', parse: parseTx },
+  { url: (c) => 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=' + c + ',day,,,640,qfq', parse: parseTx },
   { url: (c) => emUrl(c, 'https://push2his.eastmoney.com/api/qt/stock/kline/get'), parse: parseEm },
 ];
 
@@ -393,6 +393,11 @@ async function run(code) {
     const a = TA.analyze(bars);
     a.code = inst.code;
     a.name = NAME[inst.code] || inst.name;
+    /* 接入统一模型：缠论结构 + 威科夫量价 + 交易计划 + 评分。
+     * 这一步是「两页打架」的根治处 —— 以前本页只算均线七项，
+     * 选股页却用缠论×威科夫 100 分制，同一只票能给出一多一空。
+     * 现在本页也算同一套结构，并调 Model.score / Model.plan（与选股页同源）。 */
+    attachModels(a, bars);
     // 页脚显示本条数据的实际最新交易日
     const asof = document.getElementById('asof');
     if (asof) asof.textContent = fmtDate(bars[0][0]);
@@ -421,18 +426,282 @@ async function run(code) {
   }
 }
 
+/* ---------- 统一模型接入 ---------- */
+/* TA 的 bars 是 [YYMMDD, o, h, l, c, v] 且日期倒序；
+ * 缠论/威科夫/周期聚合统一要求 {d:'YYYY-MM-DD', o,h,l,c,v} 且正序。
+ * 日期必须补全成 YYYY-MM-DD：周线聚合靠 Date 解析，六位数字会被解析成
+ * 1901 年之类的乱值，导致周线/月线全部落在同一根上。 */
+function ymdOf(d) {
+  const s = String(d);
+  if (s.length === 6) return '20' + s.slice(0, 2) + '-' + s.slice(2, 4) + '-' + s.slice(4, 6);
+  return s;
+}
+
+function toAscBars(bars) {
+  const out = [];
+  for (let i = bars.length - 1; i >= 0; i--) {
+    const b = bars[i];
+    out.push({ d: ymdOf(b[0]), o: +b[1], h: +b[2], l: +b[3], c: +b[4], v: +b[5] || 0 });
+  }
+  return out;
+}
+
+function maList(asc) {
+  const out = [];
+  [5, 10, 20, 60].forEach((n) => {
+    if (asc.length < n) return;
+    let s = 0;
+    for (let i = asc.length - n; i < asc.length; i++) s += asc[i].c;
+    out.push({ n: n, value: s / n });
+  });
+  return out;
+}
+
+/* 把结构、量价、计划、评分一次性算好挂到 a 上。
+ * 任何一步失败都不阻断主流程：拿不到结构就退回纯均线结论，页面上会标出来。 */
+function attachModels(a, bars) {
+  a.plan = null; a.score = null; a.day = null; a.week = null; a.month = null; a.wyckoff = null;
+  try {
+    const asc = toAscBars(bars);
+    a.asc = asc;
+    const wb = Model.aggregate(asc, 'week');
+    const mb = Model.aggregate(asc, 'month');
+    a.day = Chan.structure(asc);
+    a.week = wb.length >= 30 ? Chan.structure(wb) : null;
+    a.month = mb.length >= 30 ? Chan.structure(mb) : null;
+    a.wyckoff = Wyckoff.analyze(asc, {});
+    a.ma = maList(asc);
+    a.plan = Model.plan({
+      price: a.price, day: a.day, week: a.week, month: a.month,
+      wyckoff: a.wyckoff, atr: a.atr, ma: a.ma,
+    });
+    a.score = Model.score({
+      month: a.month, week: a.week, day: a.day, wyckoff: a.wyckoff, plan: a.plan,
+      atr: a.atr, price: a.price, pct: a.changePct, code: a.code,
+      mainNet: null, amount: null,
+      _chg20: a.trend.mom20, _chg60: a.trend.chg60,
+    });
+    a.modelNote = a.month ? '' : '月线样本不足（需 30 个月），评分按两级别联立';
+  } catch (e) {
+    console.warn('[Analyze] 统一模型计算失败，退回均线结论', e && e.message);
+    a.modelNote = '结构引擎计算失败，本页仅显示均线与量价指标';
+  }
+}
+
 /* ---------- 渲染 ---------- */
 const TREND_CN = {
   'strong-bull': '强势多头', 'mild-bull': '温和上行', neutral: '震荡整理',
   'mild-bear': '温和下行', 'strong-bear': '弱势空头',
 };
+const POS_CN = { above: '中枢上方', inside: '中枢内部', below: '中枢下方' };
+const SUB_CN = { structure: '结构', volume: '量价', momentum: '动量', money: '资金', risk: '风险' };
+const SUB_MAX = { structure: 35, volume: 22, momentum: 17, money: 13, risk: 13 };
+const buyCnOf = (t) => ({ first: '一买', second: '二买', third: '三买' })[t] || '无买点';
+
+/* 三模型一致性：缠论方向 / 威科夫量价 / 多因子评分各投一票。
+ * 三票全同才叫共振；两票同向要说清是哪两个；全不同就直说分歧。
+ * 不用「大概率偏多」这类话糊过去 —— 用户要的是能不能动手。 */
+function consensusOf(a) {
+  const dDir = a.day ? a.day.dir : 0;
+  const wyS = a.wyckoff ? a.wyckoff.score : 0;
+  const tot = a.score ? a.score.total : 50;
+  const votes = [
+    { k: '缠论结构', v: dDir, txt: a.day ? (a.day.dirText + ' · ' + (POS_CN[a.day.position] || '—')) : '样本不足' },
+    { k: '威科夫量价', v: Math.abs(wyS) < 10 ? 0 : wyS > 0 ? 1 : -1, txt: a.wyckoff ? ('量价分 ' + wyS + (a.wyckoff.cycle ? ' · ' + a.wyckoff.cycle.name : '')) : '样本不足' },
+    { k: '多因子评分', v: tot >= 55 ? 1 : tot <= 42 ? -1 : 0, txt: '综合 ' + tot + ' 分 · ' + (a.score ? a.score.grade + ' 级 ' + a.score.gradeText : '—') },
+  ];
+  const bull = votes.filter((x) => x.v > 0).length;
+  const bear = votes.filter((x) => x.v < 0).length;
+  let cls = 'flat', txt = '三个模型分歧，方向未定';
+  if (bull === 3) { cls = 'bull'; txt = '三模型一致看多'; }
+  else if (bear === 3) { cls = 'bear'; txt = '三模型一致看空'; }
+  else if (bull === 2) { cls = 'bull'; txt = bear ? '两多一空，偏多但有分歧' : '两多一中，偏多'; }
+  else if (bear === 2) { cls = 'bear'; txt = bull ? '两空一多，偏空但有分歧' : '两空一中，偏空'; }
+  return { votes, cls, txt, bull, bear };
+}
+
+/* 交易计划卡：买区 / 止损 / 目标 / 盈亏比 / 仓位，全部来自 Model.plan。
+ * 与选股页同一套推导，所以同一只票在两页看到的价位是一致的。 */
+function planHtml(a) {
+  const p = a.plan;
+  if (!p) return '';
+  const pos = Model.position(p, 1);
+  let stateTxt, stateCls;
+  if (a.price > p.buyHi) { stateTxt = '现价高于买入区间，等回踩再动手'; stateCls = 'warn'; }
+  else if (a.price < p.buyLo) { stateTxt = '现价已跌破买入区间，先确认止损位是否守住'; stateCls = 'bad'; }
+  else { stateTxt = '现价落在买入区间内，可按计划分批'; stateCls = 'ok'; }
+
+  /* 赔率闸门：盈亏比不够时，上面那串漂亮的买区/目标/止损全是纸面数字。
+   * 与其让人照着 0.3 的盈亏比去下单，不如把结论直接写出来。 */
+  let verdict, vCls;
+  if (p.rr == null) { verdict = '赔率无法计算（样本不足）'; vCls = 'warn'; }
+  else if (p.rr >= 1.5) { verdict = '赔率合格，可按计划执行'; vCls = 'ok'; }
+  else if (p.rr >= 1.2) { verdict = '赔率勉强够，仓位减半执行'; vCls = 'warn'; }
+  else { verdict = '赔率不足，建议放弃这次机会'; vCls = 'bad'; }
+
+  return `
+    <section class="block">
+      <div class="sec-head"><h2>交易计划</h2>
+        <span class="hint">与「量化选股」同一套推导 · 可直接照着挂单</span></div>
+      <div class="plan-card">
+        <div class="plan-verdict">
+          <span class="plan-state ${vCls}">${esc(verdict)}</span>
+          <span class="plan-state ${stateCls}">${esc(stateTxt)}</span>
+        </div>
+        <div class="plan-grid">
+          <div class="pg-item">
+            <span class="pg-k">买入区间</span>
+            <b class="pg-v">${f2(p.buyLo)} ~ ${f2(p.buyHi)}</b>
+            <span class="pg-n">宽 ${p.widthPct.toFixed(1)}%（上限 3%）</span>
+          </div>
+          <div class="pg-item">
+            <span class="pg-k">止损</span>
+            <b class="pg-v down">${f2(p.stop)}</b>
+            <span class="pg-n">${esc(p.stopReason)} · 距中值 ${p.riskPct.toFixed(1)}%</span>
+          </div>
+          <div class="pg-item">
+            <span class="pg-k">目标一</span>
+            <b class="pg-v up">${f2(p.target1)}</b>
+            <span class="pg-n">盈亏比 ${p.rr ? p.rr.toFixed(2) : '—'} · ${esc(p.targetNote)}</span>
+          </div>
+          <div class="pg-item">
+            <span class="pg-k">目标二</span>
+            <b class="pg-v up">${f2(p.target2)}</b>
+            <span class="pg-n">盈亏比 ${p.rr2 ? p.rr2.toFixed(2) : '—'}</span>
+          </div>
+          <div class="pg-item">
+            <span class="pg-k">建议仓位</span>
+            <b class="pg-v">≤ ${pos ? pos.pct.toFixed(0) : '—'}%</b>
+            <span class="pg-n">按单笔账户风险 ${pos ? pos.budget : 1}% ÷ 止损距离推算</span>
+          </div>
+          <div class="pg-item">
+            <span class="pg-k">最近支撑 / 压力</span>
+            <b class="pg-v">${p.supports[0] ? f2(p.supports[0].price) : '--'} / ${p.resistances[0] ? f2(p.resistances[0].price) : '--'}</b>
+            <span class="pg-n">${p.supports[0] ? esc(p.supports[0].labels.slice(0, 2).join('、')) : '下方无聚集'} / ${p.resistances[0] ? esc(p.resistances[0].labels.slice(0, 2).join('、')) : '上方无聚集'}</span>
+          </div>
+        </div>
+        <div class="plan-bar" aria-hidden="true">
+          <i class="pb-track"></i>
+          <i class="pb-range" style="left:${barPos(p.stop, p.target1, p.buyLo)}%;width:${barPos(p.stop, p.target1, p.buyHi) - barPos(p.stop, p.target1, p.buyLo)}%"></i>
+          <i class="pb-price" style="left:${barPos(p.stop, p.target1, a.price)}%"></i>
+        </div>
+        <div class="plan-legend"><span>止损 ${f2(p.stop)}</span><span>买区</span><span>目标 ${f2(p.target1)}</span></div>
+        <p class="plan-note">计划失效条件：收盘跌破 ${f2(p.stop)}（${esc(p.stopReason)}）。到目标一先减半仓，剩余仓位按 ${f2(p.stop)} 之上移动止损跟踪。区间宽度超过 3% 或止损距离超过 12% 时，本引擎会自动收窄，不再提示。</p>
+      </div>
+    </section>`;
+}
+
+/* 价格在「止损~目标」区间里的百分比位置，用于画计划条 */
+function barPos(lo, hi, v) {
+  if (!(hi > lo)) return 50;
+  return Math.max(0, Math.min(100, (v - lo) / (hi - lo) * 100));
+}
+
+function scoreHtml(a) {
+  const sc = a.score;
+  if (!sc) return '';
+  const bars = ['structure', 'volume', 'momentum', 'money', 'risk'].map((k) => {
+    const v = sc[k], mx = SUB_MAX[k];
+    if (v == null) {
+      return `<div class="sb-row muted"><span class="sb-name">${SUB_CN[k]}</span>
+        <span class="sb-track"><i class="sb-fill ${k}" style="width:0"></i></span>
+        <span class="sb-val mono">缺数据</span></div>`;
+    }
+    return `<div class="sb-row">
+      <span class="sb-name">${SUB_CN[k]}</span>
+      <span class="sb-track"><i class="sb-fill ${k}" style="width:${Math.max(0, Math.min(100, v / mx * 100))}%"></i></span>
+      <span class="sb-val mono">${v.toFixed(1)}<em>/${mx}</em></span>
+    </div>`;
+  }).join('');
+
+  const rows = sc.detail.map((d) => `<tr>
+      <td>${esc(d.k)}</td>
+      <td class="num mono">${esc(d.v)}</td>
+      <td class="labels">${esc(d.t)}</td>
+    </tr>`).join('');
+
+  return `
+    <div class="two-col">
+      <section class="block">
+        <div class="sec-head"><h2>多因子评分</h2>
+          <span class="hint">${sc.moneyMissing ? '资金项缺数据，总分按其余四项折算 · ' : ''}100 分制 · 与选股页同源</span></div>
+        <div class="lv-card">
+          <div class="score-head">
+            <b class="score-big">${sc.total}</b>
+            <div class="score-meta"><span class="grade ${sc.grade}">${sc.grade}</span>
+              <span>${esc(sc.gradeText)} · 满足 ${sc.levelHit}/4 级</span></div>
+          </div>
+          <div class="score-bars">${bars}</div>
+        </div>
+      </section>
+      <section class="block">
+        <div class="sec-head"><h2>评分依据逐条核对</h2><span class="hint">原始分 → 归一化</span></div>
+        <div class="lv-card">
+          <table class="lv-table"><thead><tr><th>项目</th><th class="num">原始分</th><th>依据</th></tr></thead>
+          <tbody>${rows}</tbody></table>
+        </div>
+      </section>
+    </div>`;
+}
+
+function structureHtml(a) {
+  const d = a.day, w = a.week, m = a.month, wy = a.wyckoff;
+  if (!d && !wy) return '';
+  const cy = wy && wy.cycle;
+  const lv = (st, name) => st
+    ? `<div class="cs-lv"><b>${name}</b><span class="${st.dir > 0 ? 'up' : st.dir < 0 ? 'down' : ''}">${st.dirText}</span>
+        <span>${POS_CN[st.position] || '—'}</span>
+        ${st.buy && st.buy.grade ? `<span class="mini-tag">${buyCnOf(st.buy.type)}</span>` : ''}</div>`
+    : `<div class="cs-lv muted"><b>${name}</b><span>样本不足</span></div>`;
+
+  const evs = (wy && wy.events || []).slice(0, 5).map((e) =>
+    `<li class="${e.dir > 0 ? 'ev-bull' : 'ev-bear'}"><b>${esc(e.name)}</b>
+      <span class="ev-d">${e.daysAgo === 0 ? '今日' : e.daysAgo + ' 日前'}</span>
+      <p>${esc(e.detail)}</p></li>`).join('') ||
+    '<li class="ev-none">最近 5 个交易日内没有触发任何量价事件 —— 这本身是信息：没有异常量，也没有假突破。</li>';
+
+  const piv = d && d.lastPivot
+    ? `日线中枢 ${f2(d.lastPivot.zd)} ~ ${f2(d.lastPivot.zg)}（${d.lastPivot.d0} 起，${d.lastPivot.endPen - d.lastPivot.startPen + 1} 笔）`
+    : '日线暂无中枢（笔数不足 3 或区间不重叠）';
+
+  return `
+    <div class="two-col">
+      <section class="block">
+        <div class="sec-head"><h2>缠论结构</h2><span class="hint">笔 → 中枢 两级，不做线段递归</span></div>
+        <div class="lv-card cs-card">
+          ${lv(m, '月线')}${lv(w, '周线')}${lv(d, '日线')}
+          <div class="cs-foot">
+            <p>${esc(piv)}</p>
+            ${d && d.diverg && d.diverg.type
+              ? `<p class="cs-warn">${esc(d.diverg.note)}</p>`
+              : '<p class="muted">日线无背驰</p>'}
+            ${d && d.buy && d.buy.text ? `<p class="cs-buy">${esc(d.buy.text)}</p>` : ''}
+          </div>
+        </div>
+      </section>
+      <section class="block">
+        <div class="sec-head"><h2>威科夫量价</h2>
+          <span class="hint">${cy ? esc(cy.name) : '阶段未判定'}</span></div>
+        <div class="lv-card cs-card">
+          ${cy ? `<div class="cy-head"><b>${esc(cy.name)}</b><span class="cy-pos">区间 ${f2(cy.rangeLo)} ~ ${f2(cy.rangeHi)} · ${(cy.pos * 100).toFixed(0)}% 分位</span></div>
+          <p class="cy-text">${esc(cy.text)}</p>
+          <ul class="cy-ev">${(cy.evidence || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`
+          : '<p class="empty">样本不足，无法判定区间与阶段</p>'}
+          <div class="cs-foot"><p>量比 <b>${wy ? wy.volRatio.toFixed(2) : '--'}</b> · 多头事件 ${wy ? wy.bullCount : 0} / 空头事件 ${wy ? wy.bearCount : 0}</p></div>
+          <ul class="ev-list">${evs}</ul>
+        </div>
+      </section>
+    </div>`;
+}
 
 function render(a, base, aiText) {
   const up = a.changePct >= 0;
   const dirCls = up ? 'up' : 'down';
   const t = a.trend;
+  const sc = a.score;
+  const plan = a.plan;
+  const con = consensusOf(a);
 
-  // K线图（最近60 日收盘 + 均线）
   const chart = buildChart(a);
 
   const supRows = a.supports.map((s, i) => `
@@ -453,8 +722,9 @@ function render(a, base, aiText) {
       <td class="labels">${esc(r.labels.join(' · '))}</td>
     </tr>`).join('') || '<tr><td colspan="5" class="empty">现价上方暂无有效压力聚集</td></tr>';
 
-  const maRows = t.ma.all.map((m) => `
-    <tr><td>${m.label}</td><td class="num mono">${f2(m.value)}</td>
+  const maArr = a.ma || (t.ma ? t.ma.all : []);
+  const maRows = maArr.map((m) => `
+    <tr><td>MA${m.n}</td><td class="num mono">${f2(m.value)}</td>
     <td class="num ${m.value > a.price ? 'up' : 'down'}">${m.value > a.price ? '上方' : '下方'} ${Math.abs((m.value - a.price) / a.price * 100).toFixed(2)}%</td></tr>`).join('');
 
   const rsiTxt = a.rsi == null ? '样本不足'
@@ -464,6 +734,13 @@ function render(a, base, aiText) {
 
   const inWatch = WATCH.some((w) => w.code === a.code);
 
+  const conCards = con.votes.map((v) => `
+    <div class="cs-vote ${v.v > 0 ? 'bull' : v.v < 0 ? 'bear' : 'flat'}">
+      <span class="cv-k">${esc(v.k)}</span>
+      <b class="cv-v">${v.v > 0 ? '偏多' : v.v < 0 ? '偏空' : '中性'}</b>
+      <span class="cv-t">${esc(v.txt)}</span>
+    </div>`).join('');
+
   $('#result').innerHTML = `
     <!-- 头部 -->
     <div class="head-card">
@@ -471,7 +748,8 @@ function render(a, base, aiText) {
         <div class="name-row">
           <h2>${esc(a.name)}</h2>
           <span class="code">${esc(a.code)}</span>
-          <span class="tag ${a.trend.cls}">${TREND_CN[a.trend.cls]}</span>
+          ${sc ? `<span class="tag grade-tag ${sc.grade}">${sc.grade} 级 · ${esc(sc.gradeText)}</span>` : ''}
+          <span class="tag ${a.trend.cls}">日线均线 ${TREND_CN[a.trend.cls]}</span>
           <button class="w-add-btn${inWatch ? ' on' : ''}" data-add="${esc(a.code)}"
                   data-addname="${esc(a.name)}">${inWatch ? '✓ 已加自选' : '+ 加自选'}</button>
         </div>
@@ -481,10 +759,20 @@ function render(a, base, aiText) {
         </div>
       </div>
       <div class="head-side">
-        <div class="kv"><span>综合评分</span><b class="mono ${t.score > 0 ? 'up' : t.score < 0 ? 'down' : ''}">${t.score > 0 ? '+' : ''}${t.score}</b></div>
+        <div class="kv"><span>买点评分</span><b class="mono ${sc && sc.total >= 55 ? 'up' : sc && sc.total <= 42 ? 'down' : ''}">${sc ? sc.total : '--'}<small>/100</small></b></div>
+        <div class="kv"><span>盈亏比</span><b class="mono">${plan && plan.rr ? plan.rr.toFixed(2) : '--'}</b></div>
         <div class="kv"><span>20日动量</span><b class="mono ${t.mom20 > 0 ? 'up' : 'down'}">${t.mom20 != null ? (t.mom20 > 0 ? '+' : '') + t.mom20.toFixed(2) + '%' : '--'}</b></div>
         <div class="kv"><span>ATR波动</span><b class="mono">${f2(a.atr)}</b></div>
       </div>
+    </div>
+
+    <!-- 模型共识 -->
+    <div class="consensus ${con.cls}">
+      <div class="cons-head"><b>${esc(con.txt)}</b>
+        <span>缠论方向 · 威科夫量价 · 多因子评分，三票独立给出</span></div>
+      <p class="cons-foot">买点评分衡量的是「此刻这个位置值不值得买」，不是「这只股票好不好」——
+        趋势很强但已经贴着压力的票，评分同样会低，那是当前价位性价比的问题，不是公司的问题。</p>
+      <div class="cons-grid">${conCards}</div>
     </div>
 
     <!-- 操作建议 -->
@@ -500,16 +788,21 @@ function render(a, base, aiText) {
       <div class="risk-note">⚠ ${esc(base.risk)}</div>
     </div>
 
+    ${planHtml(a)}
+
     <!-- K线图 -->
     <section class="block">
-      <div class="sec-head"><h2>走势与关键价位</h2><span class="hint">近 60 个交易日收盘价，标注均线与支撑压力</span></div>
+      <div class="sec-head"><h2>K线与量能</h2>
+        <span class="hint">近 ${Math.min(60, a.bars.length)} 个交易日 · K线 + 成交量 + MACD，标注均线与关键位</span></div>
       <div class="chart-card">${chart}</div>
     </section>
+
+    ${structureHtml(a)}
 
     <!-- 支撑压力 -->
     <div class="two-col">
       <section class="block">
-        <div class="sec-head"><h2><span class="down">▼</span> 支撑位</h2><span class="hint">由近到远</span></div>
+        <div class="sec-head"><h2><span class="lv-sup-text">▼</span> 支撑位</h2><span class="hint">由近到远</span></div>
         <div class="lv-card">
           <table class="lv-table"><thead><tr>
             <th>档</th><th class="num">价位</th><th class="num">距现价</th><th class="num">强度</th><th>依据</th>
@@ -517,7 +810,7 @@ function render(a, base, aiText) {
         </div>
       </section>
       <section class="block">
-        <div class="sec-head"><h2><span class="up">▲</span> 压力位</h2><span class="hint">由近到远</span></div>
+        <div class="sec-head"><h2><span class="lv-res-text">▲</span> 压力位</h2><span class="hint">由近到远</span></div>
         <div class="lv-card">
           <table class="lv-table"><thead><tr>
             <th>档</th><th class="num">价位</th><th class="num">距现价</th><th class="num">强度</th><th>依据</th>
@@ -544,129 +837,217 @@ function render(a, base, aiText) {
             <div class="metric"><span>布林上轨</span><b class="mono">${f2(a.boll.up)}</b></div>
             <div class="metric"><span>布林中轨</span><b class="mono">${f2(a.boll.mid)}</b></div>
             <div class="metric"><span>布林下轨</span><b class="mono">${f2(a.boll.dn)}</b></div>
-            <div class="metric"><span>筹码密集区</span><b class="mono">${a.vpSplit.support || '--'} ~ ${a.vpSplit.resistance || '--'}</b></div>
-            <div class="metric"><span>60日区间</span><b class="mono">${f2(a.swing?.lowest)} ~ ${f2(a.swing?.highest)}</b></div>
+            <div class="metric"><span>筹码密集区</span><b class="mono">${f2(a.vpSplit.support)} ~ ${f2(a.vpSplit.resistance)}</b></div>
+            <div class="metric"><span>60日区间</span><b class="mono">${f2(a.swing && a.swing.lowest)} ~ ${f2(a.swing && a.swing.highest)}</b></div>
           </div>
         </div>
       </section>
     </div>
 
-    <!-- 判定依据 -->
+    ${scoreHtml(a)}
+
+    <!-- 均线判定依据 -->
     <section class="block">
-      <div class="sec-head"><h2>趋势判定依据</h2><span class="hint">八项指标加权打分，满分 8 分</span></div>
+      <div class="sec-head"><h2>均线与动能判定依据</h2>
+        <span class="hint">八项加权，得分 ${t.score}（-8 ~ +8）${a.modelNote ? ' · ' + esc(a.modelNote) : ''}</span></div>
       <div class="lv-card">
         <ul class="check-list">${t.reasons.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>
+        <p class="caliber-line">这一项只回答「均线排列与 MACD 动能如何」，不是买卖结论。买卖结论在上方「模型共识」与「交易计划」——两者口径不同，不要拿这里的 -8~+8 当评分用。</p>
       </div>
     </section>
   `;
   $('#result').classList.remove('hidden');
 }
 
-/* ---------- SVG 走势图 ---------- */
+/* ---------- SVG 走势图：K 线 + 成交量 + MACD ----------
+ * 以前这里画的是收盘价折线加一块面积，配文却写「走势与关键价位」：
+ * 看不出开盘/最高/最低，没有量，也没有动能 —— 决定买卖的三件事全缺。
+ * 现在按 A 股看盘的习惯重画成三联图：
+ *   上：K 线（红涨绿跌）+ MA5/20/60 + 支撑压力虚线
+ *   中：成交量柱 + 5 日均量线
+ *   下：MACD 柱 + DIF/DEA
+ * 颜色分工同步重排：涨跌只用红绿（A 股惯例），结构位改用青/橙，
+ * 不再让「支撑=绿、压力=红」跟「涨=红、跌=绿」在同一张图里互相打脸。 */
+const C_UP = '#e03131', C_DN = '#2f9e44';
+const C_SUP = '#0b7285', C_RES = '#d9480f';
+const C_MA5 = '#f59f00', C_MA20 = '#4a90d9', C_MA60 = '#7048e8';
+
 function buildChart(a) {
-  const asc = a.bars.slice().reverse();        // 时间正序
-  const win = asc.slice(-60);
-  const W = 720, H = 300, padL = 46, padR = 16, padT = 16, padB = 28;
-  const iw = W - padL - padR, ih = H - padT - padB;
+  const asc = a.bars.slice().reverse();
+  const N = Math.min(60, asc.length);
+  const start = asc.length - N;
+  const win = asc.slice(start);
+  const n = win.length;
 
-  // Y轴范围：以K线为主，支撑压力线若落在合理范围内才纳入，避免极端值把K线压扁
-  const vals = win.map((b) => b[4]);
-  let lo = Math.min(...vals);
-  let hi = Math.max(...vals);
-  const span = (hi - lo) || 1;
-  // 只纳入落在 K线区间 ±60% 内的关键位，超出的（离现价太远的斐波那契位）不参与定标
-  const near = [...a.supports.map((s) => s.price), ...a.resistances.map((r) => r.price)]
-    .filter((v) => v != null && isFinite(v) && v > lo - span * 0.6 && v < hi + span * 0.6);
-  const bollIn = [a.boll.up, a.boll.dn].filter((v) => v != null && isFinite(v)
-    && v > lo - span * 0.6 && v < hi + span * 0.6);
-  for (const v of [...near, ...bollIn]) { if (v < lo) lo = v; if (v > hi) hi = v; }
-  const pad = (hi - lo) * 0.08 || Math.abs(hi) * 0.02 || 1;
-  lo -= pad; hi += pad;
+  const W = 780, padL = 56, padR = 66;
+  const yM = 14, hM = 234;
+  const yV = yM + hM + 22, hV = 62;
+  const yC = yV + hV + 26, hC = 86;
+  const HH = yC + hC + 30;
+  const iw = W - padL - padR;
+  const step = iw / n;
+  const bw = Math.max(2, Math.min(9, step * 0.62));
+  const X = (i) => padL + step * (i + 0.5);
 
-  const X = (i) => padL + (iw * i) / (win.length - 1);
-  const Y = (v) => padT + ih - ((v - lo) / (hi - lo)) * ih;
+  // 均线在全量序列上算完再切窗口，否则窗口首端 20/60 根会是空值
+  const allC = asc.map((b) => b[4]);
+  const maOf = (k) => {
+    const out = new Array(allC.length).fill(null);
+    let sum = 0;
+    for (let i = 0; i < allC.length; i++) {
+      sum += allC[i];
+      if (i >= k) sum -= allC[i - k];
+      if (i >= k - 1) out[i] = sum / k;
+    }
+    return out.slice(start);
+  };
+  const ma5 = maOf(5), ma20 = maOf(20), ma60 = maOf(60);
 
-  // 均线序列
-  const closes = win.map((b) => b[4]);
-  const ma = (n) => closes.map((_, i) => {
-    if (i < n - 1) return null;
-    let s = 0;
-    for (let k = i - n + 1; k <= i; k++) s += closes[k];
-    return s / n;
-  });
-  const ma20 = ma(20), ma60 = win.length >= 60 ? ma(60) : [];
+  // 主图纵轴：K 线高低 + 均线 + 落在合理范围内的关键位
+  let lo = Infinity, hi = -Infinity;
+  win.forEach((b) => { if (b[3] < lo) lo = b[3]; if (b[2] > hi) hi = b[2]; });
+  [ma5, ma20, ma60].forEach((arr) => arr.forEach((v) => {
+    if (v != null && isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; }
+  }));
+  const rawSpan = (hi - lo) || 1;
+  const keyPrices = [...a.supports.map((x) => x.price), ...a.resistances.map((x) => x.price)]
+    .filter((v) => isFinite(v) && v > lo - rawSpan * 0.5 && v < hi + rawSpan * 0.5);
+  keyPrices.forEach((v) => { if (v < lo) lo = v; if (v > hi) hi = v; });
+  const padY = (hi - lo) * 0.06 || Math.abs(hi) * 0.02 || 1;
+  lo -= padY; hi += padY;
+  const Y = (v) => yM + hM - ((v - lo) / (hi - lo)) * hM;
 
-  const line = (arr) => arr.map((v, i) => v == null ? null : `${X(i).toFixed(1)},${Y(v).toFixed(1)}`)
-    .filter(Boolean).map((p, i) => (i ? 'L' : 'M') + p).join(' ');
+  // 成交量
+  const vols = win.map((b) => b[5]);
+  const vmax = Math.max.apply(null, vols.concat([1]));
+  const YV = (v) => yV + hV - (v / vmax) * hV;
+  const vma = [];
+  for (let i = 0; i < n; i++) {
+    const s0 = Math.max(0, i - 4);
+    let t = 0;
+    for (let k = s0; k <= i; k++) t += vols[k];
+    vma.push(t / (i - s0 + 1));
+  }
 
-  // 收盘线：map 内首点已是 M，不能在外层再加 M（否则出现 "MM" 导致整条路径失效）
-  const closePath = closes.map((v, i) => (i ? 'L' : 'M') +
-    X(i).toFixed(1) + ',' + Y(v).toFixed(1)).join(' ');
+  // MACD（与指标引擎同一套参数，避免图上柱子和表里数值对不上）
+  const mc = TA.macd(allC);
+  const dif = mc.dif.slice(start), dea = mc.dea.slice(start), hist = mc.hist.slice(start);
+  let mmax = 1e-9;
+  for (let i = 0; i < n; i++) {
+    mmax = Math.max(mmax, Math.abs(dif[i] || 0), Math.abs(dea[i] || 0), Math.abs(hist[i] || 0));
+  }
+  const midY = yC + hC / 2;
+  const YC = (v) => midY - (v / mmax) * (hC / 2 - 4);
 
-  // 面积图：从首点起笔，沿收盘线到末点，再回落到基线闭合
-  const areaPath = closePath +
-    ` L${X(win.length - 1).toFixed(1)},${Y(lo).toFixed(1)} L${X(0).toFixed(1)},${Y(lo).toFixed(1)} Z`;
-
-  const yGrid = [0, 0.25, 0.5, 0.75, 1].map((t) => {
-    const v = lo + (hi - lo) * (1 - t);
-    return `<line x1="${padL}" y1="${Y(v).toFixed(1)}" x2="${W - padR}" y2="${Y(v).toFixed(1)}"
-             stroke="#eceef1" stroke-width="1"/>
-            <text x="${padL - 6}" y="${Y(v).toFixed(1)}" font-size="10" fill="#9aa0a6"
-             text-anchor="end" dominant-baseline="central">${v.toFixed(v > 100 ? 0 : 2)}</text>`;
-  }).join('');
-
-  const xLabels = [0, Math.floor(win.length / 3), Math.floor(win.length * 2 / 3), win.length - 1]
-    .map((i) => `<text x="${X(i).toFixed(1)}" y="${H - 8}" font-size="10" fill="#9aa0a6"
-                  text-anchor="middle">${fmtDate(win[i][0])}</text>`).join('');
-
-  // 关键位横线（自动跳过与已画线过近的，避免标签重叠）
-  const drawn = [];
-  const lvLine = (price, cls, label) => {
-    if (price == null || !isFinite(price)) return '';
-    const y = Y(price);
-    if (y < padT || y > padT + ih) return '';
-    if (drawn.some((d) => Math.abs(d - y) < 15)) return '';
-    drawn.push(y);
-    const color = cls === 'sup' ? '#2f9e44' : '#e03131';
-    return `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}"
-              stroke="${color}" stroke-width="1" stroke-dasharray="4 3" opacity=".75"/>
-            <rect x="${padL + 2}" y="${(y - 7).toFixed(1)}" width="86" height="14" rx="3"
-              fill="${color}" opacity=".12"/>
-            <text x="${padL + 6}" y="${y.toFixed(1)}" font-size="9.5" fill="${color}"
-              dominant-baseline="central">${label} ${price.toFixed(price > 1000 ? 0 : 2)}</text>`;
+  const pathOf = (arr, Yf) => {
+    let d = '', pen = false;
+    for (let i = 0; i < arr.length; i++) {
+      const v = arr[i];
+      if (v == null || !isFinite(v)) { pen = false; continue; }
+      d += (pen ? 'L' : 'M') + X(i).toFixed(1) + ',' + Yf(v).toFixed(1) + ' ';
+      pen = true;
+    }
+    return d.trim();
   };
 
-  const now = a.price, prev = a.prevClose;
-  const lastY = Y(now);
-  const dot = `<circle cx="${X(win.length - 1)}" cy="${lastY.toFixed(1)}" r="3.5"
-      fill="${now >= prev ? '#e03131' : '#2f9e44'}" stroke="#fff" stroke-width="1.5"/>`;
+  // 主图网格与刻度
+  const grid = [0, 0.25, 0.5, 0.75, 1].map((t) => {
+    const v = lo + (hi - lo) * t;
+    const y = Y(v).toFixed(1);
+    return `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="#eef0f3" stroke-width="1"/>
+      <text x="${padL - 8}" y="${y}" font-size="10" fill="#98a2b3" text-anchor="end"
+        dominant-baseline="central">${v.toFixed(v >= 100 ? 1 : 2)}</text>`;
+  }).join('');
 
-  const supLv = a.supports.slice(0, 2).map((s) => lvLine(s.price, 'sup', '支撑')).join('');
-  const resLv = a.resistances.slice(0, 2).map((r) => lvLine(r.price, 'res', '压力')).join('');
+  // K 线与成交量柱
+  let candles = '', vbars = '';
+  win.forEach((b, i) => {
+    const o = b[1], h = b[2], l = b[3], c = b[4];
+    const rise = c >= o;
+    const col = rise ? C_UP : C_DN;
+    const x = X(i);
+    const yO = Y(o), yC2 = Y(c);
+    const top = Math.min(yO, yC2);
+    const hgt = Math.max(1.2, Math.abs(yC2 - yO));
+    candles += `<line x1="${x.toFixed(1)}" y1="${Y(h).toFixed(1)}" x2="${x.toFixed(1)}" y2="${Y(l).toFixed(1)}"
+        stroke="${col}" stroke-width="1"/>` +
+      `<rect x="${(x - bw / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}" height="${hgt.toFixed(1)}"
+        fill="${col}" opacity="${rise ? 0.92 : 1}"/>`;
+    vbars += `<rect x="${(x - bw / 2).toFixed(1)}" y="${YV(vols[i]).toFixed(1)}" width="${bw.toFixed(1)}"
+        height="${Math.max(0.8, yV + hV - YV(vols[i])).toFixed(1)}" fill="${col}" opacity=".5"/>`;
+  });
 
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block">
-    <defs><linearGradient id="cg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="${now >= prev ? '#e03131' : '#2f9e44'}" stop-opacity=".18"/>
-      <stop offset="100%" stop-color="${now >= prev ? '#e03131' : '#2f9e44'}" stop-opacity="0"/>
-    </linearGradient></defs>
-    ${yGrid}
-    <path d="${areaPath}" fill="url(#cg)"/>
-    ${ma60.length ? `<path d="${line(ma60)}" fill="none" stroke="#f2a900" stroke-width="1.2" opacity=".8"/>` : ''}
-    <path d="${line(ma20)}" fill="none" stroke="#4a90d9" stroke-width="1.2" opacity=".9"/>
-    <path d="${closePath}"
-      fill="none" stroke="${now >= prev ? '#e03131' : '#2f9e44'}" stroke-width="1.8"
-      stroke-linejoin="round" stroke-linecap="round"/>
-    ${supLv}${resLv}
-    ${dot}
+  // MACD 柱
+  let histBars = '';
+  for (let i = 0; i < n; i++) {
+    const v = hist[i] || 0;
+    const y0 = YC(0), y1 = YC(v);
+    histBars += `<rect x="${(X(i) - bw / 2).toFixed(1)}" y="${Math.min(y0, y1).toFixed(1)}" width="${bw.toFixed(1)}"
+      height="${Math.max(0.6, Math.abs(y1 - y0)).toFixed(1)}" fill="${v >= 0 ? C_UP : C_DN}" opacity=".75"/>`;
+  }
+
+  // 关键位虚线：标签放到右侧留白区，避免压在 K 线上
+  const drawn = [];
+  const priceLabel = (price, color, txt) => {
+    if (price == null || !isFinite(price)) return '';
+    const y = Y(price);
+    if (y < yM - 2 || y > yM + hM + 2) return '';
+    if (drawn.some((d) => Math.abs(d - y) < 13)) return '';
+    drawn.push(y);
+    return `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}"
+        stroke="${color}" stroke-width="1" stroke-dasharray="4 3" opacity=".85"/>
+      <text x="${W - padR + 4}" y="${y.toFixed(1)}" font-size="9.5" fill="${color}"
+        dominant-baseline="central">${txt} ${price.toFixed(2)}</text>`;
+  };
+
+  /* 顺序很重要：priceLabel 内部用 drawn 做 13px 去重，先算的占位。
+   * 现价是这张图上最该看见的数字，所以必须第一个算 —— 之前写在最后，被
+   * 贴着现价的 R1 / S1 抢了位置，图上根本没有「现价」这条线。 */
+  const nowLv = priceLabel(a.price, a.price >= a.prevClose ? C_UP : C_DN, '现价');
+  const supLv = a.supports.slice(0, 2).map((x, i) => priceLabel(x.price, C_SUP, 'S' + (i + 1))).join('');
+  const resLv = a.resistances.slice(0, 2).map((x, i) => priceLabel(x.price, C_RES, 'R' + (i + 1))).join('');
+
+  // 横轴日期：只在最下方标 4 个，三层图共用一套
+  const xi = [0, Math.floor(n / 3), Math.floor(n * 2 / 3), n - 1];
+  const xLabels = xi.map((i) => `<text x="${X(i).toFixed(1)}" y="${HH - 8}" font-size="10"
+      fill="#98a2b3" text-anchor="middle">${fmtDate(win[i][0])}</text>`).join('');
+
+  const volTop = vmax >= 1e4 ? (vmax / 1e4).toFixed(0) + '万手' : vmax.toFixed(0);
+
+  return `<svg viewBox="0 0 ${W} ${HH}" width="100%" style="display:block">
+    ${grid}
+    ${candles}
+    ${ma60.some((v) => v != null) ? `<path d="${pathOf(ma60, Y)}" fill="none" stroke="${C_MA60}" stroke-width="1.1" opacity=".85"/>` : ''}
+    ${ma20.some((v) => v != null) ? `<path d="${pathOf(ma20, Y)}" fill="none" stroke="${C_MA20}" stroke-width="1.1" opacity=".9"/>` : ''}
+    <path d="${pathOf(ma5, Y)}" fill="none" stroke="${C_MA5}" stroke-width="1.1" opacity=".9"/>
+    ${nowLv}${supLv}${resLv}
+
+    <line x1="${padL}" y1="${yV - 8}" x2="${W - padR}" y2="${yV - 8}" stroke="#e6e8ec"/>
+    <text x="${padL - 8}" y="${yV + 8}" font-size="9.5" fill="#98a2b3" text-anchor="end">成交量</text>
+    <text x="${padL - 8}" y="${yV + 20}" font-size="9" fill="#c1c7d0" text-anchor="end">${volTop}</text>
+    ${vbars}
+    <path d="${pathOf(vma, YV)}" fill="none" stroke="#868e96" stroke-width="1" opacity=".85"/>
+
+    <line x1="${padL}" y1="${yC - 8}" x2="${W - padR}" y2="${yC - 8}" stroke="#e6e8ec"/>
+    <text x="${padL - 8}" y="${yC + 10}" font-size="9.5" fill="#98a2b3" text-anchor="end">MACD</text>
+    <line x1="${padL}" y1="${YC(0).toFixed(1)}" x2="${W - padR}" y2="${YC(0).toFixed(1)}" stroke="#dee2e6"/>
+    ${histBars}
+    <path d="${pathOf(dif, YC)}" fill="none" stroke="${C_MA5}" stroke-width="1.2"/>
+    <path d="${pathOf(dea, YC)}" fill="none" stroke="${C_MA20}" stroke-width="1.2"/>
+
     ${xLabels}
   </svg>
   <div class="legend">
-    <span><i style="background:${now >= prev ? '#e03131' : '#2f9e44'}"></i>收盘价</span>
-    <span><i style="background:#4a90d9"></i>MA20</span>
-    ${ma60.length ? '<span><i style="background:#f2a900"></i>MA60</span>' : ''}
-    <span><i class="dash" style="background:#2f9e44"></i>支撑</span>
-    <span><i class="dash" style="background:#e03131"></i>压力</span>
-  </div>`;
+    <span><i style="background:${C_UP}"></i>阳线</span>
+    <span><i style="background:${C_DN}"></i>阴线</span>
+    <span><i style="background:${C_MA5}"></i>MA5</span>
+    <span><i style="background:${C_MA20}"></i>MA20</span>
+    <span><i style="background:${C_MA60}"></i>MA60</span>
+    <span><i class="dash" style="color:${C_SUP}"></i>支撑</span>
+    <span><i class="dash" style="color:${C_RES}"></i>压力</span>
+    <span><i style="background:#868e96"></i>5日均量</span>
+  </div>
+  <p class="chart-note">三维对齐着看：<b>价</b>在均线之上、<b>量</b>却在 5 日均量之下，是缩量上行，不追；<b>MACD 柱</b>由绿转红的当根，通常就是这段回调的结束点。红涨绿跌为 A 股惯例，支撑/压力改用青/橙，不与涨跌色混用。</p>`;
 }
 
 function fmtDate(d) {

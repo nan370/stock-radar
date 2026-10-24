@@ -11,9 +11,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="股票看盘">
-<link rel="stylesheet" href="styles.css?v=20261023c">
-<script src="sharelink.js?v=20261023c"></script>
-<script src="watchsync.js?v=20261023c"></script>
+<link rel="stylesheet" href="styles.css?v=20261024g">
+<script src="sharelink.js?v=20261024g"></script>
+<script src="watchsync.js?v=20261024g"></script>
 <script>
 // SDK 多源加载：任一 CDN 可用即可，避免单一 CDN 不可达导致整站失效
 (function(){
@@ -68,13 +68,14 @@
 
 <main class="wrap">
 
-  <!-- 关键信号 -->
-  <section class="signals" id="signals">
-    <div class="sec-head">
-      <h2><span class="dot live"></span>关键信号与操作建议</h2>
-      <span class="hint" id="signalHint"></span>
+  <!-- 市场温度：涨跌家数 + 涨跌停 + 指数涨幅 合成的 0~100 温度 -->
+  <section class="mtemp" id="mtemp">
+    <div class="mt-left"><b class="mt-score">--</b><span class="mt-label">统计中</span></div>
+    <div class="mt-mid">
+      <div class="mt-scale"><i class="mt-pin" style="left:50%"></i></div>
+      <div class="mt-marks"><span>冰点</span><span>偏冷</span><span>中性</span><span>偏热</span><span>过热</span></div>
     </div>
-    <div class="signal-grid" id="signalGrid"></div>
+    <div class="mt-stats"><div class="mt-stat"><span>正在获取</span><b>--</b></div></div>
   </section>
 
   <!-- 主要市场指数 -->
@@ -137,6 +138,15 @@
       </div>
     </div>
     <ul class="news-list" id="newsList"></ul>
+  </section>
+
+  <!-- 关键信号（放在最下：它是结论，先看数据再看判断） -->
+  <section class="signals" id="signals">
+    <div class="sec-head">
+      <h2><span class="dot live"></span>关键信号与操作建议</h2>
+      <span class="hint" id="signalHint"></span>
+    </div>
+    <div class="signal-grid" id="signalGrid"></div>
   </section>
 
   <footer class="foot">
@@ -203,7 +213,7 @@
   </div>
 </div>
 
-<script src="live.js?v=20261023c"></script>
-<script src="app.js?v=20261023c"></script>
+<script src="live.js?v=20261024g"></script>
+<script src="app.js?v=20261024g"></script>
 </body>
 </html>
