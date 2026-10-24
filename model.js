@@ -208,7 +208,12 @@ var Model = (function () {
     var rr = risk > 0 ? (t1 - mid) / risk : null;
     var rr2 = risk > 0 ? (t2 - mid) / risk : null;
 
-    var waitPullback = (hi < price * 0.998) || (s1 < price * 0.98);
+    /* waitPullback 只表示「买区被压在现价下方，需要等回踩」这一种情况。
+     * 2026-10-24 修：旧版还并入了「最近支撑深于现价 2%」—— 那只说明下方有回踩空间，
+     * 不代表现价高于买区；而买区上沿本来就允许到现价 +1.5%（见上面的 hi），
+     * 现价通常就落在区间内。误判的后果是选股页标「等回踩」、分析页写
+     * 「现价 290 高于计划买区上沿 294.35」，与交易计划区的「已在区间内」自相矛盾。 */
+    var waitPullback = hi < price * 0.998;
 
     return {
       supports: sup, resistances: res,
@@ -219,6 +224,8 @@ var Model = (function () {
       riskPct: mid > 0 ? risk / mid * 100 : null,
       atr: a,
       waitPullback: waitPullback,
+      /* 现价是否落在买区内：给下游做文案判断用，避免各自重复写比较、写出不一致的结论 */
+      inBuyZone: price >= lo && price <= hi,
       targetNote: (t1 >= r1 - 1e-9) ? '目标为最近压力位'
         : '最近压力过远，目标已按 6 倍 ATR / +15% 封顶',
       widthPct: (hi - lo) / mid * 100,

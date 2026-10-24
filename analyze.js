@@ -527,8 +527,12 @@ function planHtml(a) {
   if (!p) return '';
   const pos = Model.position(p, 1);
   let stateTxt, stateCls;
+  /* 赔率不够时不能给绿标签「可按计划分批」—— 同一张卡右边就是红标签
+   * 「赔率不足，建议放弃这次机会」，一绿一红并列等于自相矛盾。 */
+  const lowRR = p.rr != null && p.rr < 1.2;
   if (a.price > p.buyHi) { stateTxt = '现价高于买入区间，等回踩再动手'; stateCls = 'warn'; }
   else if (a.price < p.buyLo) { stateTxt = '现价已跌破买入区间，先确认止损位是否守住'; stateCls = 'bad'; }
+  else if (lowRR) { stateTxt = '位置已到买入区间内，但赔率不够，先别动手'; stateCls = 'warn'; }
   else { stateTxt = '现价落在买入区间内，可按计划分批'; stateCls = 'ok'; }
 
   /* 赔率闸门：盈亏比不够时，上面那串漂亮的买区/目标/止损全是纸面数字。

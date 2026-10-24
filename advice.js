@@ -105,7 +105,14 @@ const Advice = (() => {
     const chasing = overbought || (nearResDist != null && nearResDist < 1.5 && a.rsi > 60);
     const bp = (v) => (v == null || !isFinite(v) ? '--' : v.toFixed(2));
 
-    if (pl && pl.waitPullback && (out.tone === 'bull' || grade >= 2)) {
+    /* 买区位置一律拿真实价格比较，不再靠 pl.waitPullback 那个布尔量猜。
+     * 2026-10-24 修：旧写法在这个分支里把「高于计划买区上沿」写死了，
+     * 于是「现价 290，买区 285.52~294.35」被讲成「290 高于上沿 294.35」——
+     * 现价明明在区间内，同一张卡上的交易计划区还写着「已在买入区间内，可分批」。 */
+    const zonePos = !pl ? null
+      : (a.price > pl.buyHi ? 'above' : a.price < pl.buyLo ? 'below' : 'in');
+
+    if (pl && zonePos === 'above' && (out.tone === 'bull' || grade >= 2)) {
       out.action = '等回踩 / 不追高';
       out.headline += `；现价高于买区，等回到 ${bp(pl.buyLo)}~${bp(pl.buyHi)} 再动手`;
       out.points.push(`操作：现价 ${bp(a.price)} 高于计划买区上沿 ${bp(pl.buyHi)}，
@@ -117,9 +124,20 @@ const Advice = (() => {
         追高性价比差；回踩 ${pl ? bp(pl.buyLo) + '~' + bp(pl.buyHi) : nearSup ? nearSup.price.toFixed(2) + ' 附近' : '支撑位'} 再考虑加仓`);
     } else if (out.tone === 'bull' && pl) {
       out.action = grade >= 2 ? '分批建仓' : (up ? '持股 / 逢低吸纳' : '观望 / 等待确认');
-      out.points.push(`操作：买区 ${bp(pl.buyLo)}~${bp(pl.buyHi)}，止损 ${bp(pl.stop)}（${pl.stopReason}，
+      /* 赔率不够时不能喊「分批建仓」—— 交易计划区在同一张卡上写的是
+       * 「赔率不足，建议放弃这次机会」，两句话摆一起等于自打脸。 */
+      const lowRR = rr != null && rr < 1.2;
+      if (lowRR) out.action = '赔率不足 / 观望';
+      const zoneTxt = zonePos === 'in'
+        ? `现价 ${bp(a.price)} 已在买区 ${bp(pl.buyLo)}~${bp(pl.buyHi)} 内`
+          + (lowRR ? '，位置到了但赔率不够，先别动手' : '，可以按计划分批')
+        : zonePos === 'below'
+          ? `现价 ${bp(a.price)} 已跌破买区下沿 ${bp(pl.buyLo)}，先确认止损 ${bp(pl.stop)} 能否守住`
+          : `现价 ${bp(a.price)} 高于买区上沿 ${bp(pl.buyHi)}，等回踩再动手`;
+      out.points.push(`操作：${zoneTxt}；止损 ${bp(pl.stop)}（${pl.stopReason}，
         距中值 ${pl.riskPct.toFixed(1)}%），目标 ${bp(pl.target1)} / ${bp(pl.target2)}，
-        盈亏比 ${rr ? rr.toFixed(2) : '--'}；仓位按单笔风险 1% 反推 ≤ ${pl.riskPct > 0 ? Math.min(100, 1 / pl.riskPct * 100).toFixed(0) : '--'}%`);
+        盈亏比 ${rr ? rr.toFixed(2) : '--'}${lowRR ? '（不足 1.2，不值得为这个位置承担风险）' : ''}；
+        仓位按单笔风险 1% 反推 ≤ ${pl.riskPct > 0 ? Math.min(100, 1 / pl.riskPct * 100).toFixed(0) : '--'}%`);
     } else if (t.cls === 'neutral') {
       out.action = '观望 / 区间操作';
       if (nearSup && nearRes) {
