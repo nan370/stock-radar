@@ -317,7 +317,42 @@
     return '<h4 style="margin-top:14px">源间核对<span class="sm">多家行情源相互印证</span></h4>' + rows.join('');
   }
 
+  /* ---------------------- 入选频次（2026-10-26） ----------------------
+   * 「每次跑出来的票都不一样」是这个工具最需要正面回答的问题。
+   * 与其解释一堆概率，不如把历史摆出来：这只票最近 N 个交易日进了几次榜。
+   * 数据源就用 saveHistory 每天存的那份（screen_hist_YYYY-MM-DD）——
+   * 只按天统计、不按次，否则一天跑十次就能把频次刷得毫无意义。
+   * 统计时排除当天：今天的结果还没定，算进去只会得到「近1日1次」。 */
+  function histFreq() {
+    var today = 'screen_hist_' + ymdDash();
+    var keys = Object.keys(localStorage)
+      .filter(function (k) { return k.indexOf('screen_hist_') === 0 && k !== today; })
+      .sort();                                    // 按日期升序，key 名即日期
+    var map = {};
+    keys.forEach(function (k) {
+      var rec;
+      try { rec = JSON.parse(localStorage.getItem(k)); } catch (e) { return; }
+      var seen = {};
+      ((rec && rec.items) || []).forEach(function (it) {
+        if (!it || !it.code || seen[it.code]) return;
+        seen[it.code] = 1;
+        map[it.code] = (map[it.code] || 0) + 1;
+      });
+    });
+    return { map: map, days: keys.length };
+  }
+
+  /* 连续 N 天都在榜 = 结构真的稳住了；只在 N 天里冒一次头 = 踩着门槛线 */
+  function freqTag(fq, code) {
+    if (!fq || !fq.days || !fq.map[code]) return '';
+    var hits = fq.map[code];
+    var strong = hits === fq.days && fq.days >= 2;
+    return '<span class="freq-chip' + (strong ? ' strong' : '') + '">' +
+      (strong ? '连续' + fq.days + '日' : '近' + fq.days + '日' + hits + '次') + '</span>';
+  }
+
   function pickTable(list) {
+    var FQ = histFreq();
     var head = '<div class="cand-wrap"><div class="table-scroll"><table class="cand-table"><thead><tr>' +
       '<th>标的</th><th>评分</th><th class="num">现价</th><th>趋势</th>' +
       '<th class="num">买入区间</th><th class="num">止损</th><th class="num">目标</th>' +
@@ -337,7 +372,7 @@
       if (it.envWarn) warn += '<span class="warn-chip">环境逆风</span>';
 
       return '<tr class="cand-row" data-idx="' + i + '">' +
-        '<td><div class="cand-name">' + esc(it.name) + warn + '</div>' +
+        '<td><div class="cand-name">' + esc(it.name) + freqTag(FQ, it.code) + warn + '</div>' +
           '<div class="cand-code">' + it.code + (it.industry ? ' · ' + esc(it.industry) : '') +
           verifyTag(it.verify) + '</div></td>' +
         '<td><div class="score-cell"><span class="score-num">' + s.total + '</span>' +
@@ -522,6 +557,22 @@
     renderBasis(result);
     renderSources(result);
 
+    /* 频次标签的含义要写出来，否则「近5日3次」没人看得懂。
+     * 没有任何历史时不显示这块，别拿空说明占地方。 */
+    var fq = histFreq();
+    var note = $('#freqNote');
+    if (note) {
+      if (fq.days) {
+        note.style.display = '';
+        note.innerHTML = '<b>入选频次</b> —— 名字后面的标签，是说这只票在最近 <b>' + fq.days +
+          '</b> 个交易日的选股记录里入选过几次。<span class="fn-strong">蓝色「连续N日」</span>' +
+          '表示结构稳定压在门槛之上，值得盯；灰色「近N日1次」多半是踩着盈亏比或分数的门槛线，' +
+          '下次跑可能就没了。只按天记一次，同一天跑多次不会刷高。记录只存在本机浏览器。';
+      } else {
+        note.style.display = 'none';
+      }
+    }
+
     if (!list.length) {
       $('#pickArea').innerHTML = '<div class="empty-state"><b>本次没有满足全部条件的标的</b>' +
         '入榜要求综合分 ≥ 45、盈亏比 ≥ 1.2、日线结构未破坏且至少两级结构共振。' +
@@ -557,6 +608,7 @@
     var blk = $('#watchBlock');
     if (!list.length) { blk.style.display = 'none'; return; }
     blk.style.display = '';
+    var FQ = histFreq();
     $('#watchHint').textContent = list.length + ' 只结构尚可但未达建仓门槛';
 
     $('#watchGrid').innerHTML = list.map(function (it) {
@@ -569,7 +621,7 @@
       if (p.waitPullback) why.push('需等回踩至 ' + n2(p.buyLo) + ' 附近');
 
       return '<div class="watch-card" data-code="' + it.code + '">' +
-        '<div class="wc-top"><span class="wc-name">' + esc(it.name) + '</span>' +
+        '<div class="wc-top"><span class="wc-name">' + esc(it.name) + freqTag(FQ, it.code) + '</span>' +
           '<span class="wc-score">' + s.total + '</span></div>' +
         '<div class="wc-line">' + it.code + ' · ' + n2(it.price) + ' <span class="' + cls(it.pct) + '">' + pctText(it.pct) + '</span></div>' +
         '<div class="wc-line">区间 ' + n2(p.buyLo) + '~' + n2(p.buyHi) + ' ｜ 盈亏比 ' + (p.rr ? p.rr.toFixed(2) : '—') + '</div>' +
@@ -872,8 +924,10 @@
 
         renderPicks(result);
         renderWatch(result.watch);
+        /* 0 只合格的日子也要记一笔：否则「近 N 日」的 N 会漏掉空仓日，
+         * 分母偏小会让频次虚高。 */
+        saveHistory(result);
         if (result.picked.length) {
-          saveHistory(result);
           setProgress(true, '回测计算中…', 95);
           return runBacktest(result).then(function () {
             setProgress(false);

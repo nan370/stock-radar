@@ -1067,6 +1067,20 @@ function fmtDate(d) {
 const LS_WATCH = 'stockradar.watchlist.v1';
 const watchLS = () => { try { return JSON.parse(localStorage.getItem(LS_WATCH) || '[]'); } catch (e) { return []; } };
 const watchLSWrite = (arr) => { try { localStorage.setItem(LS_WATCH, JSON.stringify(arr)); } catch (e) {} };
+/* 云端 watchlist 表没有 sort 列，只能按 id（＝加入先后）返回。
+ * 用户手动拖过顺序的话，本机这份才是他想要的次序，所以取回云端数据后
+ * 按本机记录再排一遍；本机没记录的（别的设备新加的）自然落到末尾。 */
+function applyLocalOrder(list) {
+  const local = watchLS();
+  if (!local.length || !list.length) return list;
+  const pos = new Map();
+  local.forEach((w, i) => { if (!pos.has(w.code)) pos.set(w.code, i); });
+  return list.slice().sort((a, b) => {
+    const pa = pos.has(a.code) ? pos.get(a.code) : 1e9;
+    const pb = pos.has(b.code) ? pos.get(b.code) : 1e9;
+    return pa - pb;
+  });
+}
 const marketOf = (code) => (/^hk/.test(code) ? '港股' : /^us/.test(code) ? '美股' : 'A股');
 
 let WATCH = [];        // [{code,name,market,id?}]
@@ -1138,8 +1152,8 @@ async function watchLoad() {
       try {
         const { data, error } = await cloud.database.from('watchlist').select('*').order('id');
         if (!error) {
-          WATCH = (data || []).map((w) => ({ id: w.id, code: w.code, name: w.name, market: w.market }));
-          if (WATCH.length) watchLSWrite(WATCH.map((w) => ({ code: w.code, name: w.name, market: w.market })));
+          WATCH = applyLocalOrder((data || []).map((w) => ({ id: w.id, code: w.code, name: w.name, market: w.market })));
+          if (WATCH.length) watchSaveOrder();
           else if (local.length) await watchRestore(local);
         } else {
           $('#wSideTip').textContent = '云端自选读取失败，先显示本机自选。';
@@ -1163,8 +1177,8 @@ async function watchRestore(list) {
   if (ok) toast('已把本机 ' + ok + ' 只自选同步到云端账户');
   const { data } = await cloud.database.from('watchlist').select('*').order('id').catch(() => ({ data: [] }));
   if (data && data.length) {
-    WATCH = data.map((w) => ({ id: w.id, code: w.code, name: w.name, market: w.market }));
-    watchLSWrite(WATCH.map((w) => ({ code: w.code, name: w.name, market: w.market })));
+    WATCH = applyLocalOrder(data.map((w) => ({ id: w.id, code: w.code, name: w.name, market: w.market })));
+    watchSaveOrder();
   }
 }
 
@@ -1176,11 +1190,12 @@ function watchRender() {
   const badge = $('#wToggleNum');
   if (badge) badge.textContent = WATCH.length;
 
-  $('#wSideTip').textContent = watchSess
+  $('#wSideTip').textContent = (watchSess
     ? '已登录：自选存在云端账户，换设备也在。点一只即可分析。'
     : (CLOUD_ON
         ? '未登录：自选只存在这台设备。点一只即可分析。'
-        : '自选存在本机。换设备点上方「分享」，打开链接即可导入。');
+        : '自选存在本机。换设备点上方「分享」，打开链接即可导入。'))
+    + ' 按住每行左侧 ⋮⋮ 可上下拖动排序。';
 
   if (!WATCH.length) {
     ul.innerHTML = '<li class="wside-empty">还没有自选股。<br>在上方输入代码或名称（如 600519 / 茅台），' +
@@ -1189,13 +1204,134 @@ function watchRender() {
   }
   ul.innerHTML = WATCH.map((w) => `
     <li class="wrow${w.code === CUR_CODE ? ' active' : ''}" data-code="${esc(w.code)}" title="点击查看分析">
+      <span class="w-drag" title="按住拖动调整顺序">⋮⋮</span>
       <span class="w-main"><b>${esc(w.name || w.code)}</b><i>${esc(w.code)}</i></span>
       <span class="w-quote" data-q="${esc(w.code)}">--</span>
       <button class="rm" data-del="${esc(w.code)}" title="移出自选">×</button>
     </li>`).join('');
+  watchSortInit();
   watchFill();
   watchSyncAddBtn();
   fitSidebar();
+}
+
+/* ==================== 自选股手动排序（2026-10-26） ====================
+ * 自选清单是「我正在盯的票」，顺序该由用户定，不该被加入时间钉死。
+ * 顺序只存本机 localStorage：云端 watchlist 表没有 sort 列，
+ * 所以登录时是「云端取数据、本机定顺序」——两台设备排序可以不同，但各自稳定。
+ * 桌面走 HTML5 拖放；手机不派发 drag 事件，另用 pointer 事件补一套。 */
+function watchSaveOrder() {
+  /* 只存 code/name/market，与首页弹窗共用同一个 key，格式保持一致 */
+  watchLSWrite(WATCH.map((w) => ({ code: w.code, name: w.name, market: w.market })));
+}
+
+/* 把 from 挪到 to 的位置（after=true 表示插到 to 之后） */
+function watchMoveTo(fromCode, toCode, after) {
+  const from = WATCH.findIndex((w) => w.code === fromCode);
+  if (from < 0 || fromCode === toCode) return false;
+  const item = WATCH[from];
+  const rest = WATCH.filter((w) => w.code !== fromCode);
+  let to = rest.findIndex((w) => w.code === toCode);
+  if (to < 0) return false;
+  if (after) to += 1;
+  rest.splice(to, 0, item);
+  WATCH = rest;
+  watchSaveOrder();
+  watchRender();
+  return true;
+}
+
+/* 落点是「目标行的上半还是下半」，返回 {code, after} */
+function dropTargetAt(ul, y) {
+  const rows = [...ul.querySelectorAll('.wrow')];
+  for (const li of rows) {
+    const r = li.getBoundingClientRect();
+    if (y >= r.top && y <= r.bottom) {
+      return { code: li.dataset.code, after: y > r.top + r.height / 2 };
+    }
+  }
+  if (!rows.length) return null;
+  const first = rows[0].getBoundingClientRect();
+  if (y < first.top) return { code: rows[0].dataset.code, after: false };
+  const last = rows[rows.length - 1].getBoundingClientRect();
+  return { code: rows[rows.length - 1].dataset.code, after: true };
+}
+
+function watchSortInit() {
+  const ul = $('#wSideList');
+  if (!ul || ul.dataset.sortInit) return;   // 列表会被反复重渲染，事件只挂一次
+  ul.dataset.sortInit = '1';
+
+  const clearMarks = () => {
+    ul.querySelectorAll('.drag-over-top,.drag-over-bottom,.dragging')
+      .forEach((n) => n.classList.remove('drag-over-top', 'drag-over-bottom', 'dragging'));
+  };
+
+  /* 统一用 pointer 事件：桌面鼠标和手机触摸走同一套逻辑。
+   * 不用 HTML5 drag —— 触屏根本不派发 drag 事件，两套实现只会多一处不一致。 */
+  let dragFrom = '';       // 正在拖的代码
+  let pressY = 0;          // 按下时的 Y，用来判断是「点一下」还是「拖」
+  let active = false;      // 是否已越过拖动阈值
+  let pointerId = null;
+  let suppressClick = false;
+
+  /* 拖完松手那一下会顺带触发 click，不拦住就会把「查看分析」误点出来；
+   * 点在手柄上但没拖动时同理 —— 手柄只管排序，不该顺手切股票。 */
+  ul.addEventListener('click', (e) => {
+    const onHandle = e.target.closest('.w-drag');
+    if (!suppressClick && !onHandle) return;
+    suppressClick = false;
+    e.stopPropagation();
+    e.preventDefault();
+  }, true);
+
+  ul.addEventListener('pointerdown', (e) => {
+    const handle = e.target.closest('.w-drag');
+    if (!handle) return;
+    const li = handle.closest('.wrow');
+    if (!li) return;
+    dragFrom = li.dataset.code;
+    pressY = e.clientY;
+    active = false;
+    pointerId = e.pointerId;
+    try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+    e.preventDefault();      // 触摸时别选中文字、别跟着滚
+  });
+
+  ul.addEventListener('pointermove', (e) => {
+    if (!dragFrom || e.pointerId !== pointerId) return;
+    if (!active && Math.abs(e.clientY - pressY) < 5) return;
+    if (!active) {
+      active = true;
+      const li = ul.querySelector('.wrow[data-code="' + dragFrom + '"]');
+      if (li) li.classList.add('dragging');
+    }
+    e.preventDefault();
+    ul.querySelectorAll('.drag-over-top,.drag-over-bottom')
+      .forEach((n) => n.classList.remove('drag-over-top', 'drag-over-bottom'));
+    const tgt = dropTargetAt(ul, e.clientY);
+    if (tgt && tgt.code !== dragFrom) {
+      const li = ul.querySelector('.wrow[data-code="' + tgt.code + '"]');
+      if (li) li.classList.add(tgt.after ? 'drag-over-bottom' : 'drag-over-top');
+    }
+  }, { passive: false });
+
+  const endDrag = (e, commit) => {
+    if (!dragFrom || (e && e.pointerId !== pointerId)) return;
+    const from = dragFrom;
+    const y = e ? e.clientY : pressY;
+    const wasActive = active;
+    dragFrom = ''; active = false; pointerId = null;
+    clearMarks();
+    if (!wasActive) return;              // 只是点了一下手柄，没真拖
+    suppressClick = true;
+    setTimeout(() => { suppressClick = false; }, 300);
+    if (!commit) return;
+    const tgt = dropTargetAt(ul, y);
+    if (tgt && tgt.code !== from) watchMoveTo(from, tgt.code, tgt.after);
+  };
+  ul.addEventListener('pointerup', (e) => endDrag(e, true));
+  ul.addEventListener('pointercancel', (e) => endDrag(e, false));
 }
 
 /* 左侧分析卡上的「+ 加自选」要跟着自选变化：加完立刻变「✓ 已加自选」，
