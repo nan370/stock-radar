@@ -611,7 +611,12 @@ var Screener = (function () {
 
       var price = row.price || db[db.length - 1].c;
       var a = atr(db, 14);
-      var plan = buildPlan({ price: price, day: day, week: week, month: month, wyckoff: wy, atr: a, ma: ma });
+      /* 与个股分析页同一口径：盘中锚定「上一完整交易日收盘」，不拿实时价当推导基准。
+       * 不锚的话，同一只票在选股页（price=实时）和分析页（anchor=昨收）会给出
+       * 两套买区，来回打脸 —— 这正是 model.js 当初要解决的那类问题。
+       * 收盘后 partial=false，anchor 就等于 price，行为与原来一致。 */
+      var anchor = (partial && db.length >= 2) ? db[db.length - 2].c : price;
+      var plan = buildPlan({ price: price, anchor: anchor, day: day, week: week, month: month, wyckoff: wy, atr: a, ma: ma });
       var m30st = (m30 && m30.length >= 40) ? Chan.structure(m30) : null;
 
       return {

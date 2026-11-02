@@ -115,6 +115,12 @@ var Model = (function () {
   function plan(ctx) {
     var price = ctx.price, day = ctx.day, week = ctx.week, month = ctx.month;
     var wy = ctx.wyckoff, a = ctx.atr;
+    /* 锚定价 anchor：买区 / 止损 / 目标的推导基准。
+     * 2026-11-02 起个股分析页传「上一完整交易日收盘」，不再拿盘中实时价当基准 ——
+     * 实时价每个 tick 都变，hi 又被写成 anchor×1.015，整段买区就跟着现价平移，
+     * 用户看到的就是「买入区域一直在变」。
+     * 不传 anchor 时退回 price，选股页（用的本来就是收盘数据）行为完全不变。 */
+    var anchor = (ctx.anchor != null && isFinite(ctx.anchor) && ctx.anchor > 0) ? ctx.anchor : price;
     var cands = [];
 
     function add(p, label, w) {
@@ -152,21 +158,21 @@ var Model = (function () {
      * 所以均线只做下方支撑。 */
     if (ctx.ma) {
       ctx.ma.forEach(function (m) {
-        if (m.value < price) add(m.value, 'MA' + m.n, m.n >= 60 ? 3 : 2);
+        if (m.value < anchor) add(m.value, 'MA' + m.n, m.n >= 60 ? 3 : 2);
       });
     }
 
-    var sup = clusterLevels(cands, price, 'down').slice(0, 3);
-    var res = clusterLevels(cands, price, 'up').slice(0, 3);
+    var sup = clusterLevels(cands, anchor, 'down').slice(0, 3);
+    var res = clusterLevels(cands, anchor, 'up').slice(0, 3);
 
-    var s1 = sup[0] ? sup[0].price : price * 0.95;
-    var r1 = res[0] ? res[0].price : price * 1.08;
+    var s1 = sup[0] ? sup[0].price : anchor * 0.95;
+    var r1 = res[0] ? res[0].price : anchor * 1.08;
 
     var stopCands = [];
     if (day && day.buy && day.buy.price) stopCands.push({ p: day.buy.price * 0.985, label: '跌破日线买点低点' });
     if (day && day.lastPivot) stopCands.push({ p: day.lastPivot.zd * 0.99, label: '跌破日线中枢下沿' });
     if (wy) stopCands.push({ p: wy.rangeLo * 0.985, label: '跌破60日区间下沿' });
-    if (a) stopCands.push({ p: price - a * 2, label: '2倍ATR止损' });
+    if (a) stopCands.push({ p: anchor - a * 2, label: '2倍ATR止损' });
 
     var stop = null;
     stopCands.forEach(function (c) {
@@ -174,10 +180,10 @@ var Model = (function () {
     });
     if (!stop) stop = { p: s1 * 0.97, label: '支撑位下方 3%' };
 
-    /* 买入区间：宽度硬性上限 3%，上沿不追过现价 1.5%、也不超过最近压力 */
-    var hi = Math.min(price * 1.015, r1 * 0.995);
+    /* 买入区间：宽度硬性上限 3%，上沿不追过基准价 1.5%、也不超过最近压力 */
+    var hi = Math.min(anchor * 1.015, r1 * 0.995);
     var loRaw = Math.max(stop.p * 1.008, s1 * 1.002);
-    if (!(hi > loRaw)) { hi = price * 1.01; loRaw = price * 0.985; }
+    if (!(hi > loRaw)) { hi = anchor * 1.01; loRaw = anchor * 0.985; }
     var lo = Math.max(loRaw, hi * 0.97);
     var mid = (lo + hi) / 2;
 
@@ -208,12 +214,8 @@ var Model = (function () {
     var rr = risk > 0 ? (t1 - mid) / risk : null;
     var rr2 = risk > 0 ? (t2 - mid) / risk : null;
 
-    /* waitPullback 只表示「买区被压在现价下方，需要等回踩」这一种情况。
-     * 2026-10-24 修：旧版还并入了「最近支撑深于现价 2%」—— 那只说明下方有回踩空间，
-     * 不代表现价高于买区；而买区上沿本来就允许到现价 +1.5%（见上面的 hi），
-     * 现价通常就落在区间内。误判的后果是选股页标「等回踩」、分析页写
-     * 「现价 290 高于计划买区上沿 294.35」，与交易计划区的「已在区间内」自相矛盾。 */
-    var waitPullback = hi < price * 0.998;
+    /* waitPullback 只表示「买区被压在基准价下方，需要等回踩」这一种情况。 */
+    var waitPullback = hi < anchor * 0.998;
 
     return {
       supports: sup, resistances: res,
@@ -223,6 +225,9 @@ var Model = (function () {
       rr: rr, rr2: rr2,
       riskPct: mid > 0 ? risk / mid * 100 : null,
       atr: a,
+      /* anchor：本次推导用的基准价；anchorMode 告诉页面它是什么口径 */
+      anchor: anchor,
+      anchorMode: anchor === price ? 'price' : 'anchor',
       waitPullback: waitPullback,
       /* 现价是否落在买区内：给下游做文案判断用，避免各自重复写比较、写出不一致的结论 */
       inBuyZone: price >= lo && price <= hi,

@@ -660,6 +660,10 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
   font-size:9.5px;color:#495057;white-space:nowrap}
 .plan-legend{display:flex;justify-content:space-between;font-size:11px;color:var(--sub);margin-bottom:12px}
 .plan-note{font-size:12px;color:var(--sub);line-height:1.75;padding-top:11px;border-top:1px dashed var(--line)}
+/* 基准说明：告诉用户这串价位是拿哪天哪个价算的。放在失效条件之上，
+ * 用浅灰底把「口径」和「执行细节」区分开，避免被当成又一段免责声明。 */
+.plan-basis{color:var(--text);background:var(--bg);border-top:0;border-radius:8px;
+  padding:8px 11px;margin:0 0 11px;font-size:12px}
 
 /* —— 评分 —— */
 .score-head{display:flex;align-items:baseline;gap:14px;padding:16px 18px;border-bottom:1px solid var(--line)}

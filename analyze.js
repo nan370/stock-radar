@@ -297,10 +297,16 @@ function parseEm(j) {
  * 首选腾讯：该域名对浏览器跨域开放，且沪深京三个板都能取到日K（东财 push2his
  * 在部分网络/设备上会被拦成 ERR_EMPTY_RESPONSE，故退为备选）。 */
 const KLINE_SRC = [
-  { url: (c) => 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get?param=' + c + ',day,,,640,qfq', parse: parseTx },
-  { url: (c) => 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=' + c + ',day,,,640,qfq', parse: parseTx },
-  { url: (c) => emUrl(c, 'https://push2his.eastmoney.com/api/qt/stock/kline/get'), parse: parseEm },
+  { name: '腾讯主站', url: (c) => 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get?param=' + c + ',day,,,640,qfq', parse: parseTx },
+  { name: '腾讯备站', url: (c) => 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=' + c + ',day,,,640,qfq', parse: parseTx },
+  { name: '东财', url: (c) => emUrl(c, 'https://push2his.eastmoney.com/api/qt/stock/kline/get'), parse: parseEm },
 ];
+
+/* 这一次 K 线到底是从哪个源取的。
+ * 三个源的前复权基准和K线条数都不一样（腾讯 640 根 / 东财 140 根），
+ * 同一只票换个源，笔和中枢就会重画、买区跟着挪几分钱。
+ * 平时不吭声，落到备选源时在计划卡上标一句，免得用户以为算法在乱跳。 */
+let LAST_SRC = '';
 
 /* 依次尝试各源。本项目统一格式 [YYMMDD, open, high, low, close, volume]，最新在前 */
 async function fetchBarsOnline(code) {
@@ -314,7 +320,7 @@ async function fetchBarsOnline(code) {
         const bars = src.parse(await r.json(), code);
         if (bars) {
           const newest = bars.slice().reverse();
-          if (isFresh(newest)) return newest;
+          if (isFresh(newest)) { LAST_SRC = src.name; return newest; }
         }
         break; // 该源没有数据（或数据过旧），换源而不是重试
       } catch (e) {
@@ -457,13 +463,109 @@ function maList(asc) {
   return out;
 }
 
+/* ---------- 推导基准：盘中剔除当日未完成 K ----------
+ * K 线源在盘中会把「今天这根还没走完的 K」放在数组头部，它的 close 就是实时价，
+ * high/low 还在长。拿它当推导基准，等于让每个 tick 都参与运算，
+ * 买区 / 止损 / ATR 就一直在挪 —— 这正是用户看到的「买入区域一直在变」。
+ * 处理：盘中一律用「上一完整交易日收盘」当锚定价，结构、威科夫、均线、ATR
+ * 也全部只用已收盘的 K；实时价只用来判断「现价在区间内还是区间外」。 */
+function ymd6(d) {
+  return String(d.getFullYear()).slice(2)
+    + String(d.getMonth() + 1).padStart(2, '0')
+    + String(d.getDate()).padStart(2, '0');
+}
+
+/* 交易时段：周一至周五 9:15（集合竞价）~ 15:05（收盘后 5 分钟缓冲）。
+ * 节假日无法在纯前端判断，靠「最新K日期是否等于今天」兜住：不开市就没有今日K。 */
+function inTradingSession(now) {
+  const t = now || new Date();
+  const wd = t.getDay();
+  if (wd === 0 || wd === 6) return false;
+  const m = t.getHours() * 60 + t.getMinutes();
+  return m >= 9 * 60 + 15 && m <= 15 * 60 + 5;
+}
+
+function basisOf(bars) {
+  const hasToday = String(bars[0][0]) === ymd6(new Date());
+  const intraday = hasToday && inTradingSession();
+  /* 剔除后样本太少（新股）就退回全量，此时退化为旧行为，不比原来更差 */
+  const st = (intraday && bars.length > 31) ? bars.slice(1) : bars;
+  return {
+    intraday: intraday && st !== bars,
+    structBars: st,
+    anchor: st[0][4],
+    anchorDate: ymdOf(st[0][0]),
+  };
+}
+
+/* ---------- 当日计划快照 ----------
+ * 同一交易日里，行情源的复权基准 / K线条数偶尔会换（首选源抽风落到备选），
+ * 笔与中枢随之重画，买区跟着变几分钱。用户看到的就是「刚才还是 285.52，现在 284.9」。
+ * 处理：按「标的 + 基准日 + 口径」把当天算出的计划固化，当天不再重算；
+ * 换交易日自然失效，点 ↻ 强制清空重算。 */
+const SNAP_KEY = 'wb_plan_snap_v1';
+const SNAP_MAX = 80;
+
+function snapAll() {
+  try {
+    const raw = localStorage.getItem(SNAP_KEY);
+    const o = raw ? JSON.parse(raw) : null;
+    return (o && Array.isArray(o.items)) ? o.items : [];
+  } catch (e) { return []; }
+}
+
+function snapKey(code, B) {
+  return code + '|' + B.anchorDate + '|' + (B.intraday ? 'live' : 'close');
+}
+
+function snapGet(code, B) {
+  const k = snapKey(code, B);
+  const hit = snapAll().find((x) => x.k === k);
+  return hit && hit.p ? hit.p : null;
+}
+
+/* 只存数值与标签，不存聚类成员明细 —— 一条从 ~2.5KB 压到 ~500B */
+function slimPlan(p) {
+  const slim = (arr) => (arr || []).map((g) => ({ price: g.price, weight: g.weight, labels: g.labels }));
+  return {
+    supports: slim(p.supports), resistances: slim(p.resistances),
+    buyLo: p.buyLo, buyHi: p.buyHi, buyMid: p.buyMid,
+    stop: p.stop, stopReason: p.stopReason,
+    target1: p.target1, target2: p.target2,
+    rr: p.rr, rr2: p.rr2, riskPct: p.riskPct, atr: p.atr,
+    anchor: p.anchor, anchorMode: p.anchorMode,
+    waitPullback: p.waitPullback, inBuyZone: p.inBuyZone,
+    targetNote: p.targetNote, widthPct: p.widthPct,
+  };
+}
+
+function snapPut(code, B, plan) {
+  try {
+    const k = snapKey(code, B);
+    const items = snapAll().filter((x) => x.k !== k);
+    items.unshift({ k: k, t: Date.now(), p: slimPlan(plan) });
+    localStorage.setItem(SNAP_KEY, JSON.stringify({ items: items.slice(0, SNAP_MAX) }));
+  } catch (e) { /* 配额满就放弃快照，不影响主流程 */ }
+}
+
+function snapClear() {
+  try { localStorage.removeItem(SNAP_KEY); } catch (e) { /* 忽略 */ }
+}
+
 /* 把结构、量价、计划、评分一次性算好挂到 a 上。
  * 任何一步失败都不阻断主流程：拿不到结构就退回纯均线结论，页面上会标出来。 */
 function attachModels(a, bars) {
   a.plan = null; a.score = null; a.day = null; a.week = null; a.month = null; a.wyckoff = null;
   try {
-    const asc = toAscBars(bars);
-    a.asc = asc;
+    const B = basisOf(bars);
+    const asc = toAscBars(B.structBars);
+    a.asc = toAscBars(bars);            // 图表与展示仍用全量（含今日那根）
+    a.basis = {
+      intraday: B.intraday,
+      anchor: B.anchor,
+      anchorDate: B.anchorDate,
+      srcNote: LAST_SRC && LAST_SRC !== '腾讯主站' ? LAST_SRC + '：备用源，前复权基准可能与主源有微差' : '',
+    };
     const wb = Model.aggregate(asc, 'week');
     const mb = Model.aggregate(asc, 'month');
     a.day = Chan.structure(asc);
@@ -471,13 +573,26 @@ function attachModels(a, bars) {
     a.month = mb.length >= 30 ? Chan.structure(mb) : null;
     a.wyckoff = Wyckoff.analyze(asc, {});
     a.ma = maList(asc);
-    a.plan = Model.plan({
-      price: a.price, day: a.day, week: a.week, month: a.month,
-      wyckoff: a.wyckoff, atr: a.atr, ma: a.ma,
-    });
+    /* ATR 也要用已收盘的 14 根：盘中高低点还在长，ATR 一放大，
+     * 「2 倍 ATR 止损」和买区下沿就跟着挪。取不到才退回实时 ATR。 */
+    a.atrBase = Model.atr(asc, 14) || a.atr;
+
+    const snap = snapGet(a.code, B);
+    if (snap) {
+      a.plan = snap;
+      /* 快照里的 inBuyZone 是写入那一刻的判断，现价可能已经动了，这里重算 */
+      a.plan.inBuyZone = a.price >= snap.buyLo && a.price <= snap.buyHi;
+      a.planFixed = true;
+    } else {
+      a.plan = Model.plan({
+        price: a.price, anchor: B.anchor, day: a.day, week: a.week, month: a.month,
+        wyckoff: a.wyckoff, atr: a.atrBase, ma: a.ma,
+      });
+      snapPut(a.code, B, a.plan);
+    }
     a.score = Model.score({
       month: a.month, week: a.week, day: a.day, wyckoff: a.wyckoff, plan: a.plan,
-      atr: a.atr, price: a.price, pct: a.changePct, code: a.code,
+      atr: a.atrBase, price: B.anchor, pct: a.changePct, code: a.code,
       mainNet: null, amount: null,
       _chg20: a.trend.mom20, _chg60: a.trend.chg60,
     });
@@ -526,6 +641,24 @@ function planHtml(a) {
   const p = a.plan;
   if (!p) return '';
   const pos = Model.position(p, 1);
+
+  /* 基准说明：把「这一串价位是拿哪天、哪个价算出来的」写在卡片里。
+   * 不写的话，用户看着盘中实时价上下跳、买区纹丝不动，反而会以为页面卡住了。 */
+  const B = a.basis;
+  const basisTxt = B
+    ? (B.intraday
+      ? `基准 ${B.anchorDate} 收盘 ${f2(B.anchor)}（盘中固定）· 现价 ${f2(a.price)} 只用于判断区间内外`
+      : `基准 ${B.anchorDate} 收盘 ${f2(B.anchor)}`)
+    : '';
+  /* 日线级别的计划一天只定一次。盘中要是已经涨跌超过 3%，这套价位就跟当下的
+   * 结构脱节了 —— 与其让人对着一条挂不上的买区发呆，不如直接说清什么时候会更新。 */
+  const devPct = (p.anchor && isFinite(p.anchor)) ? (a.price - p.anchor) / p.anchor * 100 : 0;
+  const devTxt = Math.abs(devPct) > 3
+    ? `现价已偏离基准 ${devPct > 0 ? '+' : ''}${devPct.toFixed(1)}%，当日计划参考价值下降，收盘后自动重算`
+    : '';
+  const basisTag = a.planFixed
+    ? '<span class="tag">当日固化</span>'
+    : '';
   let stateTxt, stateCls;
   /* 赔率不够时不能给绿标签「可按计划分批」—— 同一张卡右边就是红标签
    * 「赔率不足，建议放弃这次机会」，一绿一红并列等于自相矛盾。 */
@@ -546,7 +679,7 @@ function planHtml(a) {
   return `
     <section class="block">
       <div class="sec-head"><h2>交易计划</h2>
-        <span class="hint">与「量化选股」同一套推导 · 可直接照着挂单</span></div>
+        <span class="hint">与「量化选股」同一套推导 · 可直接照着挂单${basisTag}</span></div>
       <div class="plan-card">
         <div class="plan-verdict">
           <span class="plan-state ${vCls}">${esc(verdict)}</span>
@@ -590,6 +723,7 @@ function planHtml(a) {
           <i class="pb-price" style="left:${barPos(p.stop, p.target1, a.price)}%"></i>
         </div>
         <div class="plan-legend"><span>止损 ${f2(p.stop)}</span><span>买区</span><span>目标 ${f2(p.target1)}</span></div>
+        ${basisTxt ? `<p class="plan-note plan-basis">${esc(basisTxt)}${devTxt ? ' · ' + esc(devTxt) : ''}${B && B.srcNote ? ' · ' + esc(B.srcNote) : ''}</p>` : ''}
         <p class="plan-note">计划失效条件：收盘跌破 ${f2(p.stop)}（${esc(p.stopReason)}）。到目标一先减半仓，剩余仓位按 ${f2(p.stop)} 之上移动止损跟踪。区间宽度超过 3% 或止损距离超过 12% 时，本引擎会自动收窄，不再提示。</p>
       </div>
     </section>`;
@@ -766,7 +900,7 @@ function render(a, base, aiText) {
         <div class="kv"><span>买点评分</span><b class="mono ${sc && sc.total >= 55 ? 'up' : sc && sc.total <= 42 ? 'down' : ''}">${sc ? sc.total : '--'}<small>/100</small></b></div>
         <div class="kv"><span>盈亏比</span><b class="mono">${plan && plan.rr ? plan.rr.toFixed(2) : '--'}</b></div>
         <div class="kv"><span>20日动量</span><b class="mono ${t.mom20 > 0 ? 'up' : 'down'}">${t.mom20 != null ? (t.mom20 > 0 ? '+' : '') + t.mom20.toFixed(2) + '%' : '--'}</b></div>
-        <div class="kv"><span>ATR波动</span><b class="mono">${f2(a.atr)}</b></div>
+        <div class="kv"><span>ATR波动</span><b class="mono">${f2(a.atrBase || a.atr)}</b></div>
       </div>
     </div>
 
@@ -1622,7 +1756,10 @@ $('#chips').addEventListener('click', (e) => {
 });
 $('#homeBtn').addEventListener('click', () => { location.href = 'index.html'; });
 $('#refreshBtn').addEventListener('click', () => {
+  /* ↻ 是「我现在就要看最新的」的意思，所以连当日快照一起清掉重算。
+   * 不清快照的话，盘中点 ↻ 数字纹丝不动，会被当成按钮坏了。 */
   CACHE = {};
+  snapClear();
   $('#refreshBtn').style.transform = 'rotate(360deg)';
   setTimeout(() => ($('#refreshBtn').style.transform = ''), 500);
   run();
