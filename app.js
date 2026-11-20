@@ -207,7 +207,16 @@ async function loadAll(force) {
       };
     }
   }
-  renderMTemp(breadth, idxRows);
+  /* 情绪看板接管了原来「市场温度」的位置：温度、五维拆解、涨停梯队、板块赚钱效应
+   * 全在 sentiment.js 里现算，这里只把已经取到的涨跌家数喂过去，不重复请求接口。
+   * 它没加载成功时退回旧温度条，至少还剩一个温度可看。 */
+  if (window.Sentiment && typeof Sentiment.feed === 'function') {
+    Sentiment.feed({ breadth: breadth, idxRows: idxRows });
+  } else {
+    /* sentiment.js 没加载成功时的兜底：明确告知，而不是留一块空白 */
+    const sb = document.getElementById('sentBody');
+    if (sb) sb.innerHTML = '<div class="sent-empty">情绪看板脚本未加载（sentiment.js），请强制刷新页面（Ctrl+F5）重试。</div>';
+  }
   renderAnomalies(live.anomalies || []);
   renderSignals(live.signals || []);
   renderNews('全部');
@@ -309,82 +318,12 @@ function renderGainersLosers() {
   $('#losers').innerHTML = list(dn, 8) || '<div class="empty">' + (SECTORS.length ? '暂无领跌板块' : '板块数据获取失败，点右上角「刷新数据」重试') + '</div>';
 }
 
-/* ---------- 市场温度 ----------
- * 把已经算出来的三个东西合成一个 0~100 的温度，让「今天能不能做」一眼可见：
- *   涨跌家数占比（0~60）：最直接的市场宽度，权重最高；
- *   涨停-跌停结构（0~20，中性 10）：反映情绪的两端有多极端；
- *   主要指数平均涨幅（0~20）：把指数从 -2% ~ +2% 线性映射到 0~20。
- * 中性市（涨跌各半、无涨跌停、指数平盘）恰好落在 50 分 —— 这条校准是刻意的，
- * 否则温度条会长期偏向某一侧，看着像装饰。
- * 注意：这里不重复请求任何接口，全部复用 Live.build 已有的结果。 */
-function renderMTemp(br, idxRows) {
-  const box = $('#mtemp');
-  if (!box) return;
-  if (!br || !br.total) {
-    box.innerHTML = '<div class="mt-note">个股涨跌家数与板块数据都没取到，温度暂无法计算。'
-      + '这不是页面坏了 —— 点右上角「刷新数据」重试即可。</div>';
-    return;
-  }
-
-  const amp = (br.up + br.down) || 1;
-  const upRatio = br.up / amp;
-  const lu = br.limitUp || 0, ld = br.limitDown || 0;
-  const pcts = (idxRows || []).map((i) => liveNums(i.code, i).pct).filter((v) => v != null && isFinite(v));
-  const idxPct = pcts.length ? pcts.reduce((a, b) => a + b, 0) / pcts.length : 0;
-
-  const sBreadth = upRatio * 60;
-  const sLimit = 10 + ((lu - ld) / (lu + ld + 2)) * 10;
-  const sIndex = Math.max(0, Math.min(20, (idxPct + 2) / 4 * 20));
-  const score = Math.round(Math.max(0, Math.min(100, sBreadth + sLimit + sIndex)));
-
-  let label = '中性', lab = '';
-  if (score >= 78) { label = '过热'; lab = 'hot'; }
-  else if (score >= 60) { label = '偏热'; lab = 'warm'; }
-  else if (score >= 44) { label = '中性'; lab = ''; }
-  else if (score >= 28) { label = '偏冷'; lab = 'cool'; }
-  else { label = '冰点'; lab = 'cold'; }
-
-  /* 成交额：沪深两市指数成交额相加（单位万元 → 亿） */
-  const amtWan = (nz((QUOTES['sh000001'] || {}).amountWan, 0) + nz((QUOTES['sz399001'] || {}).amountWan, 0));
-  const amtTxt = amtWan > 0 ? fmtAmount(amtWan) : '--';
-
-  const wUp = (br.up / br.total * 100).toFixed(1);
-  const wFlat = (br.flat / br.total * 100).toFixed(1);
-  const wDown = (br.down / br.total * 100).toFixed(1);
-
-  const advice = score >= 78
-    ? '情绪过热，追高风险大；手里有的可以持股，新开仓等回踩'
-    : score >= 60
-      ? '环境偏暖，可按计划做多，但只在回踩买点下手'
-      : score >= 44
-        ? '多空均衡，选股胜率一般，仓位控制在半仓以内'
-        : score >= 28
-          ? '环境偏冷，只做强势股的回踩，不做抄底'
-          : '冰点：普跌格局，空仓等右侧信号比抢反弹划算';
-
-  box.innerHTML = `
-    <div class="mt-left">
-      <b class="mt-score">${score}</b>
-      <span class="mt-label ${lab}">${label}</span>
-    </div>
-    <div class="mt-mid">
-      <div class="mt-scale"><i class="mt-pin" style="left:${Math.max(0, Math.min(99, score))}%"></i></div>
-      <div class="mt-marks"><span>冰点 0</span><span>偏冷 28</span><span>中性 50</span><span>偏热 60</span><span>过热 78</span></div>
-    </div>
-    <div class="mt-stats">
-      <div class="mt-stat"><span>${br.proxy ? '板块涨 / 跌' : '涨 / 跌'}</span><b><span class="pos">${br.up}</span> / <span class="neg">${br.down}</span></b></div>
-      <div class="mt-stat"><span>涨停 / 跌停</span><b><span class="pos">${lu}</span> / <span class="neg">${ld}</span></b></div>
-      <div class="mt-stat"><span>指数均涨</span><b class="${cls(idxPct)}">${pct(idxPct)}</b></div>
-      <div class="mt-stat"><span>两市成交</span><b>${amtTxt}</b></div>
-    </div>
-    <div class="mt-wide">
-      <div class="mt-bar">
-        <i class="up" style="width:${wUp}%"></i><i class="flat" style="width:${wFlat}%"></i><i class="down" style="width:${wDown}%"></i>
-      </div>
-      <p class="mt-note">上涨 ${br.up} ${br.proxy ? '个板块' : '家'}（${wUp}%）· 平盘 ${br.flat} ${br.proxy ? '个' : '家'}（${wFlat}%）· 下跌 ${br.down} ${br.proxy ? '个板块' : '家'}（${wDown}%），
-        覆盖 ${br.proxy ? '行业+概念板块共 ' : '沪深 '}${br.total} ${br.proxy ? '个（个股家数当日接口未返回，已用板块口径替代）' : '只'}。<b>${advice}</b>　温度口径：涨跌家数 60% + 涨跌停结构 20% + 指数涨幅 20%，中性校准在 50 分。</p>
-    </div>`;
-}
+/* ---------- 市场温度 → 已升级为「市场情绪看板」 ----------
+ * 原来这里有一段 renderMTemp()：把涨跌家数、涨跌停、指数涨幅合成 0~100 温度，
+ * 画成一条温度尺。2026-11-20 起由 sentiment.js 的完整看板接管
+ * （温度 + 五维拆解 + 涨停梯队 + 板块赚钱效应 + 观察清单），
+ * 口径与锚点写在 sentiment.js 顶部注释里，这里不再保留第二套算法，
+ * 免得两个温度数字互相打架。 */
 
 const SIG_CN = { bullish: '看多', bearish: '看空', neutral: '中性' };
 const RISK_CN = { high: '高风险', medium: '中风险', low: '低风险' };

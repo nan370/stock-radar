@@ -11,9 +11,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="股票看盘">
-<link rel="stylesheet" href="styles.css?v=20261102a">
-<script src="sharelink.js?v=20261102a"></script>
-<script src="watchsync.js?v=20261102a"></script>
+<link rel="stylesheet" href="styles.css?v=20261120a">
+<script src="sharelink.js?v=20261120a"></script>
+<script src="watchsync.js?v=20261120a"></script>
 <script>
 // SDK 多源加载：任一 CDN 可用即可，避免单一 CDN 不可达导致整站失效
 (function(){
@@ -68,14 +68,14 @@
 
 <main class="wrap">
 
-  <!-- 市场温度：涨跌家数 + 涨跌停 + 指数涨幅 合成的 0~100 温度 -->
-  <section class="mtemp" id="mtemp">
-    <div class="mt-left"><b class="mt-score">--</b><span class="mt-label">统计中</span></div>
-    <div class="mt-mid">
-      <div class="mt-scale"><i class="mt-pin" style="left:50%"></i></div>
-      <div class="mt-marks"><span>冰点</span><span>偏冷</span><span>中性</span><span>偏热</span><span>过热</span></div>
+  <!-- 市场情绪看板：温度 + 阶段 + 五维拆解 + 涨停梯队 + 板块赚钱效应 + 观察清单
+       全部现算，由 sentiment.js 填充；涨跌家数复用 Live.build 的结果，不重复请求 -->
+  <section class="block sentiment" id="sentiment">
+    <div class="sec-head">
+      <h2><span class="dot live"></span>市场情绪看板</h2>
+      <span class="hint" id="sentHint">正在汇总涨停梯队与封板率…</span>
     </div>
-    <div class="mt-stats"><div class="mt-stat"><span>正在获取</span><b>--</b></div></div>
+    <div id="sentBody"><div class="sent-loading">正在汇总涨停梯队、封板率与赚钱效应…</div></div>
   </section>
 
   <!-- 主要市场指数 -->
@@ -213,7 +213,8 @@
   </div>
 </div>
 
-<script src="live.js?v=20261102a"></script>
-<script src="app.js?v=20261102a"></script>
+<script src="live.js?v=20261120a"></script>
+<script src="sentiment.js?v=20261120a"></script>
+<script src="app.js?v=20261120a"></script>
 </body>
 </html>
