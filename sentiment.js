@@ -26,6 +26,8 @@
   var EM_UT = '7eea3edcaed734bea9cbfc24409ed989';
   var HKEY = 'radar_sent_hist_v3';   // 历史日度缓存：{ 'YYYYMMDD': {zt,dt,zb,lb} }
   var TKEY = 'radar_sent_ts_v3';     // 当日缓存时间戳，避免反复打接口
+  var BKEY = 'radar_sent_board_v1';  // 东财行业板块全量表：{t:时间戳, m:{板块名:[代码, 涨跌幅]}}
+  var BOARD_TTL = 300000;            // 板块行情缓存 5 分钟（板块涨跌幅按分钟级更新，够用）
   var BACKFILL = 20;                 // 回补多少个交易日（东财实测约 20 日可取）
   var QUIET_MS = 45000;              // 交易时段内两次拉取的间隔下限
 
@@ -37,6 +39,8 @@
     zb: null,            // 炸板池
     yzt: null,           // 昨日涨停池（用于溢价/晋级）
     prem: null,          // {avg, n, up, down, promote, base}
+    boards: null,        // 东财行业板块全量：{板块名: [代码, 涨跌幅]}
+    boardsTs: 0,
     hist: {},            // 日度历史
     loaded: false,
     err: '',
@@ -135,7 +139,9 @@
     var jobs = [
       fetchPool('zt', today, 200, 'fbt:asc').then(function (r) { state.zt = r; }).catch(function () { state.zt = null; }),
       fetchPool('dt', today, 100, 'fund:asc').then(function (r) { state.dt = r; }).catch(function () { state.dt = null; }),
-      fetchPool('zb', today, 100, 'fbt:asc').then(function (r) { state.zb = r; }).catch(function () { state.zb = null; })
+      fetchPool('zb', today, 100, 'fbt:asc').then(function (r) { state.zb = r; }).catch(function () { state.zb = null; }),
+      /* 板块行情与涨停池并行拉，画「板块赚钱效应」时才有涨跌幅可用 */
+      loadBoards(force)
     ];
 
     return Promise.all(jobs).then(function () {
@@ -168,6 +174,69 @@
     var m = 1;
     pool.list.forEach(function (x) { var v = num(x.lbc, 1); if (v > m) m = v; });
     return m;
+  }
+
+  /* -------------------- 行业板块全量行情（板块赚钱效应用） --------------------
+   * 为什么不直接用首页的 SECTORS：那是首页板块页签自己的那几十个行业 + 概念，
+   * 覆盖不到涨停池里出现的全部申万行业，一半行只能显示「—」。
+   *
+   * 这里拉东财行业板块全量（fs=m:90+t:2，实测共 496 个），翻 5 页取完：
+   *   https://push2.eastmoney.com/api/qt/clist/get?...&fields=f12,f14,f3
+   * 结果按「板块名 → [代码, 涨跌幅]」缓存 5 分钟，接口挂了就退回上一次的旧数据。 */
+  function loadBoards(force) {
+    var now = Date.now();
+    if (!force && state.boards && now - state.boardsTs < BOARD_TTL) return Promise.resolve(state.boards);
+    var stale = null;
+    try { stale = JSON.parse(localStorage.getItem(BKEY) || 'null'); } catch (e) { stale = null; }
+    if (!force && stale && stale.m && now - stale.t < BOARD_TTL) {
+      state.boards = stale.m; state.boardsTs = stale.t;
+      return Promise.resolve(stale.m);
+    }
+    var lanes = [];
+    for (var pn = 1; pn <= 5; pn++) {
+      var q = 'pn=' + pn + '&pz=100&po=1&np=1&fltt=2&invt=2'
+        + '&fs=' + encodeURIComponent('m:90+t:2') + '&fields=f12,f14,f3';
+      lanes.push(
+        fetch('https://push2.eastmoney.com/api/qt/clist/get?' + q, { cache: 'no-store' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .catch(function () { return null; })
+      );
+    }
+    return Promise.all(lanes).then(function (arr) {
+      var m = {};
+      arr.forEach(function (j) {
+        var diff = (j && j.data && j.data.diff) || [];
+        diff.forEach(function (x) { if (x && x.f14) m[x.f14] = [x.f12, num(x.f3, null)]; });
+      });
+      if (!Object.keys(m).length) throw new Error('板块行情为空');
+      state.boards = m; state.boardsTs = now;
+      try { localStorage.setItem(BKEY, JSON.stringify({ t: now, m: m })); } catch (e) { /* 存不下就算了 */ }
+      return m;
+    }).catch(function () {
+      if (stale && stale.m) { state.boards = stale.m; return stale.m; }  // 过期也用，别让整行空着
+      state.boards = null;
+      return null;
+    });
+  }
+
+  /* 板块名对齐（关键）：涨停池返回的 hybk 被东财截断到 4 个字，
+   * 出现的是「电子化学」「汽车零部」「农产品加」，而板块表里是全名。
+   * 所以先用「去 ⅠⅡⅢ 后缀后完全相等」，再退到「板块名以这 4 字开头」取最短的一个
+   * （取最短是为了避免「电子化学」被更泛的板块名吃掉）。 */
+  function boardMatch(raw) {
+    var m = state.boards;
+    if (!m) return null;
+    var k = String(raw || '').replace(/[ⅠⅡⅢ]/g, '').trim();
+    if (!k) return null;
+    if (m[k]) return { name: k, pct: num(m[k][1], null) };
+    /* 注意：循环里比较的是「去掉后缀的名字」，但取数据必须用原始键
+     * （板块表里的键是「电子化学品Ⅱ」，规范化之后是「电子化学品」，直接用规范化名会取到 undefined） */
+    var bestKey = null, bestLen = Infinity;
+    for (var name in m) {
+      var nn = String(name).replace(/[ⅠⅡⅢ]/g, '');
+      if (nn.length >= k.length && nn.indexOf(k) === 0 && nn.length < bestLen) { bestLen = nn.length; bestKey = name; }
+    }
+    return bestKey ? { name: bestKey.replace(/[ⅠⅡⅢ]/g, ''), pct: num(m[bestKey][1], null) } : null;
   }
 
   /* 回补历史：逐日取 zt/dt/zb 的家数与最高板，写进 localStorage。
@@ -461,38 +530,16 @@
       if (num(x.lbc, 1) > o.lb) { o.lb = num(x.lbc, 1); o.rep = x.n || x.c; }
     });
 
-    var secs = [];
-    try { secs = (typeof SECTORS !== 'undefined' && SECTORS) ? SECTORS : []; } catch (e) { secs = []; }
-
-    /* 板块名对齐：先用「去掉 ⅠⅡⅢ 后缀后完全相等」精确匹配，
-     * 退一步只接受公共前缀 ≥3 个字的最长匹配。
-     * 早期版本用 indexOf 做子串包含，结果「电子化学品Ⅱ」和「消费电子Ⅱ」都命中了
-     * 板块「电子」，两行显示同一个 -3.34% —— 看着像数据串了。 */
-    var norm = function (s) { return String(s || '').replace(/[ⅠⅡⅢ]/g, '').replace(/(板块|概念|行业|指数)/g, '').trim(); };
-    function commonPrefix(a, b) {
-      var n = Math.min(a.length, b.length), i = 0;
-      while (i < n && a[i] === b[i]) i++;
-      return i;
-    }
-    function matchPct(raw) {
-      var k = norm(raw);
-      if (!k || !secs.length) return null;
-      var exact = null, best = null, bestScore = 0;
-      secs.forEach(function (s) {
-        var sn = norm(s.name);
-        if (!sn) return;
-        if (sn === k) { exact = s; return; }
-        var score = commonPrefix(sn, k);
-        if (score >= 3 && score > bestScore) { bestScore = score; best = s; }
-      });
-      var hit = exact || best;
-      if (!hit) return null;
-      try { return typeof sectorNums === 'function' ? sectorNums(hit).pct : null; } catch (e) { return null; }
-    }
-
     var rows = Object.keys(agg).map(function (k) {
       var o = agg[k];
-      return { name: k.replace(/[ⅠⅡⅢ]/g, ''), n: o.n, lb: o.lb, rep: o.rep, fund: o.fund, pct: matchPct(k) };
+      var hit = boardMatch(k);
+      return {
+        /* 显示板块表里的全名（「电子化学品」），源数据只有 4 字（「电子化学」） */
+        name: hit ? hit.name : k.replace(/[ⅠⅡⅢ]/g, ''),
+        raw: k.replace(/[ⅠⅡⅢ]/g, ''),
+        n: o.n, lb: o.lb, rep: o.rep, fund: o.fund,
+        pct: hit ? hit.pct : null
+      };
     }).sort(function (a, b) { return b.n - a.n || b.lb - a.lb; }).slice(0, 9);
 
     var top = rows[0] ? rows[0].n : 1;
