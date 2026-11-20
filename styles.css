@@ -898,3 +898,15 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .sent-stage-why i{font-style:normal;font-size:10px;padding:0 5px;border-radius:4px;margin-right:5px;font-weight:600}
 .sent-stage-why i.w{background:#fff4e6;color:#d9480f}
 .sent-stage-why i.s{background:#d3f9d8;color:#2b8a3e}
+
+/* 跌停梯队（与涨停梯队同版式，配色转为下跌绿） */
+.sent-ladder-tag.dn{color:#2b8a3e;background:#f4fbf6;border-color:#d3f9d8}
+.sent-ladder-tag.dn.hi{background:#2f9e44;border-color:#2f9e44;color:#fff}
+.sent-chip.dn{background:#f6fbf7;border-color:#e3f2e6}
+.sent-chip.dn.hi{background:#f0fbf2;border-color:#b2f2bb;color:#2b8a3e;font-weight:600}
+.sent-chip.dn i{color:#94b8a0}
+.sent-chip.dn.hi i{color:#2f9e44}
+.sent-sub-n{font-style:normal;font-weight:700;color:#495057;margin-left:6px;font-variant-numeric:tabular-nums}
+.sent-sub-n.down{color:#2b8a3e}
+.sent-sub-hint{font-style:normal;color:#adb5bd;margin-left:8px;font-size:10.5px}
+.sent-tag.dn{background:#f0fbf2;color:#2b8a3e}

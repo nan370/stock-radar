@@ -364,8 +364,15 @@
     var score = wGot > 0 ? Math.round(sGot / wGot * 100) : null;
     if (score !== null) score = clamp(score, 0, 100);
 
+    /* 连续跌停最多几天：跌停池的 days 字段，用于跌停梯队标题右侧的提示 */
+    var dtMax = null;
+    if (state.dt && state.dt.list.length) {
+      dtMax = state.dt.list.reduce(function (m, x) { var v = num(x.days, 1); return v > m ? v : m; }, 1);
+    }
+
     return {
       br: br, ztN: ztN, dtN: dtN, zbN: zbN, lb: lb, zbRate: zbRate,
+      dtMax: dtMax,
       amtYi: amtYi, amtWan: aw, upRatio: upRatio, dims: dims, score: score,
       missing: dims.filter(function (d) { return d.val === null; }).map(function (d) { return d.name; })
     };
@@ -518,6 +525,34 @@
     }).join('');
   }
 
+  /* 跌停梯队：按「连续跌停天数」分组（东财跌停池的 days 字段，
+   * 实测 11-18/19/20 依次是 1/2/3，确认就是连续天数，不是「几天几板」那种口径）。
+   * 跌停池没有 lbc，封单额在 fba（元），时间是 lbt（最后封板时间），与涨停池字段名不同。 */
+  function dtLadderHtml() {
+    if (!state.dt || !state.dt.list.length) return '<div class="sent-empty">今日跌停池暂无数据</div>';
+    var groups = {};
+    state.dt.list.forEach(function (x) {
+      var b = num(x.days, 1);
+      (groups[b] = groups[b] || []).push(x);
+    });
+    var keys = Object.keys(groups).map(Number).sort(function (a, b) { return b - a; });
+    return keys.map(function (b) {
+      /* 按封单额从小到大排：封单越小 = 越容易开板，最该盯的是它 */
+      var arr = groups[b].sort(function (x, y) { return num(x.fba, 0) - num(y.fba, 0); });
+      var chips = arr.slice(0, 40).map(function (x) {
+        return '<span class="sent-chip dn' + (b >= 3 ? ' hi' : '') + '" title="' + esc((x.hybk || '') + ' · 最后封板 ' + hhmm(x.lbt) + ' · 封单 ' + (num(x.fba, 0) / 1e8).toFixed(2) + ' 亿') + '">'
+          + esc(x.n || x.c)
+          + '<i>' + hhmm(x.lbt) + '</i>'
+          + '</span>';
+      }).join('');
+      var more = arr.length > 40 ? '<span class="sent-chip more">+' + (arr.length - 40) + '</span>' : '';
+      return '<div class="sent-ladder-row">'
+        + '<span class="sent-ladder-tag dn' + (b >= 3 ? ' hi' : '') + '">' + b + ' 天</span>'
+        + '<div class="sent-ladder-chips">' + chips + more + '</div>'
+        + '</div>';
+    }).join('');
+  }
+
   function sectorHtml() {
     var list = (state.zt && state.zt.list) || [];
     if (!list.length) return '<div class="sent-empty">今日涨停池暂无数据</div>';
@@ -566,6 +601,23 @@
     return '<div class="sent-sub-title">炸板集中板块</div>'
       + rows.map(function (r) {
         return '<span class="sent-tag warn">' + esc(r.k) + ' ' + r.n + '</span>';
+      }).join(' ');
+  }
+
+  /* 跌停集中板块：与「炸板集中板块」对称，跌停池同样是 4 字截断的 hybk，
+   * 用 boardMatch 换成板块全名，避免「电子化学 / 汽车零部」这种半截名 */
+  function dtSectorHtml() {
+    var list = (state.dt && state.dt.list) || [];
+    if (!list.length) return '';
+    var agg = {};
+    list.forEach(function (x) { var k = x.hybk || '其他'; agg[k] = (agg[k] || 0) + 1; });
+    var rows = Object.keys(agg).map(function (k) {
+      var hit = boardMatch(k);
+      return { k: hit ? hit.name : k.replace(/[ⅠⅡⅢ]/g, ''), n: agg[k] };
+    }).sort(function (a, b) { return b.n - a.n; }).slice(0, 5);
+    return '<div class="sent-sub-title">跌停集中板块</div>'
+      + rows.map(function (r) {
+        return '<span class="sent-tag dn">' + esc(r.k) + ' ' + r.n + '</span>';
       }).join(' ');
   }
 
@@ -732,16 +784,22 @@
               c.amtYi === null ? '' : (c.amtYi >= 16000 ? 'up' : c.amtYi < 8000 ? 'down' : ''))
       + '</div>'
 
-      /* ---------- 第三屏：涨停梯队 + 板块赚钱效应 ---------- */
+      /* ---------- 第三屏：涨停梯队 + 跌停梯队 / 板块赚钱效应 ---------- */
       + '<div class="sent-two">'
       +   '<div class="sent-panel">'
       +     '<div class="sent-panel-head"><h3>涨停梯队</h3><span class="hint">按连板数分组 · 悬停看封板时间与封单</span></div>'
       +     '<div class="sent-ladder">' + ladderHtml() + '</div>'
+      +     '<div class="sent-sub-title">跌停梯队'
+      +       (c.dtN ? '<span class="sent-sub-n ' + (c.dtN >= 20 ? 'down' : '') + '">' + c.dtN + ' 家</span>' : '')
+      +       (c.dtMax ? '<span class="sent-sub-hint">最多连续 ' + c.dtMax + ' 天</span>' : '')
+      +     '</div>'
+      +     '<div class="sent-ladder">' + dtLadderHtml() + '</div>'
       +   '</div>'
       +   '<div class="sent-panel">'
       +     '<div class="sent-panel-head"><h3>板块赚钱效应</h3><span class="hint">按行业聚合 · 涨停家数排序</span></div>'
       +     '<div class="sent-rows">' + sectorHtml() + '</div>'
       +     brokenHtml()
+      +     dtSectorHtml()
       +   '</div>'
       + '</div>'
 
