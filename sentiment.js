@@ -12,6 +12,8 @@
  *      —— date=YYYYMMDD 支持回补历史，实测可回溯约 20 个交易日（再往前返回空）
  *   2) 腾讯行情 qt.gtimg.cn —— 昨日涨停股今日涨幅（算「昨日涨停溢价」）
  *   3) 东财 push2 ulist —— 涨跌家数（由 app.js 的 Live.build 算好，通过 feed() 传进来）
+ *   4) breadth_seed.json —— 全A涨跌家数历史（build_breadth_seed.py 用腾讯日K逐日统计，
+ *      口径≈通达信 880005），解决「东财只给当日值、历史无从回补」的问题
  *
  * 口径说明（写在页面上，避免看完不知道数字怎么来的）：
  *   情绪温度 = 市场宽度30 + 涨跌停结构25 + 连板高度15 + 封板质量15 + 量能15
@@ -27,7 +29,11 @@
   var HKEY = 'radar_sent_hist_v3';   // 历史日度缓存：{ 'YYYYMMDD': {zt,dt,zb,lb} }
   var TKEY = 'radar_sent_ts_v3';     // 当日缓存时间戳，避免反复打接口
   var BKEY = 'radar_sent_board_v1';  // 东财行业板块全量表：{t:时间戳, m:{板块名:[代码, 涨跌幅]}}
+  var AKEY = 'radar_sent_amt_v1';    // 两市成交额日线：{t:时间戳, m:{YYYYMMDD: 亿元}}
+  var SKEY = 'radar_breadth_seed_v1'; // 全A涨跌家数历史（脚本预生成，口径≈通达信 880005）
+  var SEED_URL = 'breadth_seed.json';
   var BOARD_TTL = 300000;            // 板块行情缓存 5 分钟（板块涨跌幅按分钟级更新，够用）
+  var AMT_TTL = 180000;              // 成交额日线缓存 3 分钟（盘中当日那根一直在长，别缓存太久）
   var BACKFILL = 20;                 // 回补多少个交易日（东财实测约 20 日可取）
   var QUIET_MS = 45000;              // 交易时段内两次拉取的间隔下限
 
@@ -41,6 +47,8 @@
     prem: null,          // {avg, n, up, down, promote, base}
     boards: null,        // 东财行业板块全量：{板块名: [代码, 涨跌幅]}
     boardsTs: 0,
+    amt: null,           // 两市成交额日线：{YYYYMMDD: 亿元}
+    amtTs: 0,
     hist: {},            // 日度历史
     loaded: false,
     err: '',
@@ -141,20 +149,33 @@
       fetchPool('dt', today, 100, 'fund:asc').then(function (r) { state.dt = r; }).catch(function () { state.dt = null; }),
       fetchPool('zb', today, 100, 'fbt:asc').then(function (r) { state.zb = r; }).catch(function () { state.zb = null; }),
       /* 板块行情与涨停池并行拉，画「板块赚钱效应」时才有涨跌幅可用 */
-      loadBoards(force)
+      loadBoards(force),
+      /* 成交额日线：给量能卡做「较前日放量/缩量」对比 */
+      loadAmounts(force),
+      /* 涨跌家数兜底重试：Live 那次失败的话，这里再试两次 */
+      fetchBreadthFallback(),
+      /* 全A涨跌家数历史：脚本按腾讯日K预生成，补上「当天之前」的 20 多根柱 */
+      loadBreadthSeed()
     ];
 
     return Promise.all(jobs).then(function () {
-      /* 今日结果写回历史缓存（涨停数/最高连板/跌停数/炸板数），跨设备共享不了但当日够用 */
+      /* 今日结果写回历史缓存（涨停数/最高连板/跌停数/炸板数 + 涨跌家数），跨设备共享不了但当日够用 */
       if (state.zt || state.dt || state.zb) {
+        var keep = state.hist[today] || {};
         state.hist[today] = {
           zt: state.zt ? state.zt.tc : null,
           dt: state.dt ? state.dt.tc : null,
           zb: state.zb ? state.zb.tc : null,
-          lb: maxBoard(state.zt)
+          lb: maxBoard(state.zt),
+          /* 涨跌家数保留上次采到的，别被这一轮覆盖掉 */
+          up: keep.up, down: keep.down, flat: keep.flat
         };
         saveHist(state.hist);
       }
+      /* 涨跌家数单独写：东财收盘后 f104/f105 会归零，所以只在「确实是有效家数」时覆盖，
+       * 不会把已经存好的当日数字冲成 0。涨跌家数没有历史接口可回补，
+       * 只能每天打开页面时采一次，攒够一段时间才有完整曲线。 */
+      sampleBreadth();
       state.loaded = true;
       render();
       /* 溢价与历史回补都比较重，放到第二帧，先把主结构画出来 */
@@ -219,6 +240,246 @@
     });
   }
 
+  /* 两市成交额日线：上证综指 + 深证综指 的成交额相加。
+   *
+   * 主源用同花顺 v6/line（实测浏览器直连可用，且一次给 140 天）：
+   *   https://d.10jqka.com.cn/v6/line/hs_1A0001/01/last.js   上证综指
+   *   https://d.10jqka.com.cn/v6/line/hs_399106/01/last.js   深证综指
+   *   —— 内容是 JSONP：quotebridge_xxx({...})，data 里每行
+   *      「日期,开,高,低,收,成交量(股),成交额(元),换手率,...」
+   *      2026-11-20 沪深各 7025.7 亿 / 7196.3 亿，合计 1.42 万亿，与东财 f57 完全对上。
+   *
+   * 备源是东财 kline（push2his），本机实测 ERR_EMPTY_RESPONSE 不通，但别的网络环境可能可用，
+   * 所以留着当兜底，不通就走同花顺。
+   *
+   * 为什么不用首页 QUOTES 的 amountWan：那是「当日实时」一个点，没有历史就没法比前日。
+   * 这里统一用日线口径，当日与前一日同源，放量缩量才不会判反。 */
+  function parseJsonp(txt) {
+    var str = String(txt || '');
+    var i = str.indexOf('('), j = str.lastIndexOf(')');
+    if (i < 0 || j <= i) return null;
+    try { return JSON.parse(str.slice(i + 1, j)); } catch (e) { return null; }
+  }
+
+  function loadAmounts(force) {
+    var now = Date.now();
+    if (!force && state.amt && now - state.amtTs < AMT_TTL) return Promise.resolve(state.amt);
+    var stale = null;
+    try { stale = JSON.parse(localStorage.getItem(AKEY) || 'null'); } catch (e) { stale = null; }
+    if (!force && !state.amt && stale && stale.m) { state.amt = stale.m; state.amtTs = stale.t || 0; }
+
+    /* 同花顺：两个综指各一份日线 */
+    var THS = ['hs_1A0001', 'hs_399106'];
+    var lanes = THS.map(function (c) {
+      return fetch('https://d.10jqka.com.cn/v6/line/' + c + '/01/last.js', { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.text() : null; })
+        .catch(function () { return null; });
+    });
+
+    return Promise.all(lanes).then(function (arr) {
+      var m = {};
+      var got = 0;
+      arr.forEach(function (txt) {
+        if (!txt) return;
+        var j = parseJsonp(txt);
+        var rows = (j && j.data) ? String(j.data).split(';') : [];
+        if (!rows.length) return;
+        got++;
+        rows.forEach(function (line) {
+          var p = String(line).split(',');
+          var d = String(p[0] || '');
+          var v = num(p[6], 0);          // 成交额，单位元
+          if (d.length === 8 && v > 0) m[d] = (m[d] || 0) + v / 1e8;   // → 亿元
+        });
+      });
+      if (got < 2 || !Object.keys(m).length) throw new Error('成交额日线不完整');
+      /* 只保留最近 40 天，别把缓存撑大 */
+      var keys = Object.keys(m).sort();
+      while (keys.length > 40) delete m[keys.shift()];
+      state.amt = m; state.amtTs = now;
+      try { localStorage.setItem(AKEY, JSON.stringify({ t: now, m: m })); } catch (e) { /* 存不下就算了 */ }
+      return m;
+    }).catch(function () {
+      /* 同花顺挂了再试东财，不行就用上一次的旧数据 */
+      return Promise.all(['1.000001', '0.399106'].map(function (sec) {
+        return fetch('https://push2his.eastmoney.com/api/qt/stock/kline/get?fields1=f1,f2'
+          + '&fields2=f51,f57&klt=101&fqt=0&end=20500101&lmt=30&secid=' + sec, { cache: 'no-store' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .catch(function () { return null; });
+      })).then(function (arr) {
+        var m = {};
+        arr.forEach(function (j) {
+          var kl = (j && j.data && j.data.klines) || [];
+          kl.forEach(function (line) {
+            var p = String(line).split(',');
+            var d = String(p[0] || '').replace(/-/g, '');
+            var v = num(p[1], 0);
+            if (d.length === 8 && v > 0) m[d] = (m[d] || 0) + v / 1e8;
+          });
+        });
+        if (!Object.keys(m).length) {
+          if (stale && stale.m) { state.amt = stale.m; return stale.m; }
+          return null;
+        }
+        state.amt = m; state.amtTs = now;
+        try { localStorage.setItem(AKEY, JSON.stringify({ t: now, m: m })); } catch (e) { /* 忽略 */ }
+        return m;
+      });
+    });
+  }
+
+  /* ----------------------- 全A涨跌家数历史（≈ 通达信 880005） -----------------------
+   * 浏览器直连不上海通达信的板块指数 880005，所以由 build_breadth_seed.py 在本地把
+   * 沪深全部 A 股最近 40 个交易日的「收盘 vs 前收」逐日统计一遍，落成 breadth_seed.json
+   * 随站点一起分发。这里只负责读文件、合并进 hist。
+   *   - 历史日一律以 seed 为准（那是收盘定稿，比之前盘中随手采的半截数靠谱）；
+   *   - 当天盘中不覆盖，留给实时接口（东财 f104/f105）；
+   *   - 文件拿不到就退到 localStorage 里的上一份，仍没有就维持原来的自采累积。 */
+  function inSession() {
+    var now = new Date(), w = now.getDay();
+    var mins = now.getHours() * 60 + now.getMinutes();
+    return w >= 1 && w <= 5 && mins >= 555 && mins <= 930;
+  }
+
+  function applySeed(rows) {
+    if (!rows) return 0;
+    if (!state.hist || !Object.keys(state.hist).length) state.hist = loadHist();
+    var today = ymdOf(new Date());
+    var live = inSession();
+    var n = 0;
+    Object.keys(rows).forEach(function (d) {
+      var v = rows[d];
+      if (!v || v.length < 2) return;
+      var key = String(d).replace(/-/g, '');           // seed 里可能带横线，hist 统一 8 位
+      if (key.length !== 8) return;
+      if (key === today && live) return;               // 盘中实时优先
+      var rec = state.hist[key] || {};
+      var up = num(v[0], -1), dn = num(v[1], -1);
+      if (up < 0 || dn < 0 || up + dn < 500) return;   // 数据明显不全的丢掉
+      rec.up = up;
+      rec.down = dn;
+      rec.flat = num(v[2], 0);
+      rec.bdSrc = 'seed';
+      state.hist[key] = rec;
+      n++;
+    });
+    if (n) saveHist(state.hist);
+    return n;
+  }
+
+  function seedFromCache() {
+    try {
+      var c = JSON.parse(localStorage.getItem(SKEY) || 'null');
+      if (c && c.rows) return applySeed(c.rows);
+    } catch (e) { /* 缓存坏了就当没有 */ }
+    return 0;
+  }
+
+  function loadBreadthSeed() {
+    return fetch(SEED_URL + '?t=' + Math.floor(Date.now() / 600000), { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        var rows = (j && j.rows) || null;
+        if (!rows) return seedFromCache();
+        try {
+          localStorage.setItem(SKEY, JSON.stringify({ t: Date.now(), rows: rows, src: j.src, up: j.updated }));
+        } catch (e) { /* 存不下不影响本次渲染 */ }
+        return applySeed(rows);
+      })
+      .catch(function () { return seedFromCache(); });
+  }
+
+  /* 涨跌家数兜底：Live 那边只请求一次东财宽度接口，被掐断就退化成「板块口径」的假家数。
+   * 这里自己再试两次（间隔 500ms），成功就覆盖掉代理值 —— 实测这个接口是间歇性失败，
+   * 多试一次往往就通了，通了才是真的全市场 5000+ 家。 */
+  function fetchBreadthFallback() {
+    if (state.br && (num(state.br.up, 0) + num(state.br.down, 0)) >= 3000) return Promise.resolve(true);
+    var url = 'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2'
+      + '&fields=f12,f14,f104,f105,f106&secids=1.000001,0.399001';
+    var attempt = function (left) {
+      return fetch(url, { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) {
+          var rows = (j && j.data && j.data.diff) || [];
+          if (!rows.length) throw new Error('empty');
+          var up = 0, dn = 0, fl = 0;
+          rows.forEach(function (x) { up += num(x.f104, 0); dn += num(x.f105, 0); fl += num(x.f106, 0); });
+          if (up + dn < 3000) throw new Error('partial');
+          state.br = { total: up + dn + fl, up: up, down: dn, flat: fl };
+          return true;
+        })
+        .catch(function () {
+          return left > 0
+            ? new Promise(function (r) { setTimeout(r, 500); }).then(function () { return attempt(left - 1); })
+            : false;
+        });
+    };
+    return attempt(2);
+  }
+
+  /* 把「当前的涨跌家数」落到某个交易日上。
+   * 只在数据像样时写（两市约 5400 只，低于 3000 说明接口只回了一半）；
+   * 历史日已经记过就不再覆盖，免得同一根柱子被反复刷成不同数字。 */
+  function sampleBreadth() {
+    if (!state.br) return false;
+    var up = num(state.br.up, 0), dn = num(state.br.down, 0);
+    if (up + dn < 3000) return false;
+    if (!state.hist || !Object.keys(state.hist).length) state.hist = loadHist();
+    var d = brTargetDay();
+    var rec = state.hist[d] || {};
+    var todayK0 = ymdOf(new Date());
+    if (d !== todayK0 && rec.up != null) return false;   // 历史日只记一次
+    if (rec.up === up && rec.down === dn) return false;  // 没变化就别折腾
+    rec.up = up;
+    rec.down = dn;
+    rec.flat = num(state.br.flat, 0);
+    state.hist[d] = rec;
+    saveHist(state.hist);
+    return true;
+  }
+
+  /* 涨跌家数该记到哪一天：
+   * 工作日 09:15~15:30 直接记今天；其余时间（夜里、周末）记「最近一个已经有涨停数据的交易日」，
+   * 这样周六打开也能把周五那次家数补上，不会写到周六这个空键里。
+   * 为什么这么绕：涨跌家数只有「当前值」没有历史接口，采一次就少一次，
+   * 采错日子就等于污染了那根柱子。 */
+  function brTargetDay() {
+    var now = new Date();
+    if (inSession()) return ymdOf(now);
+    var ks = Object.keys(state.hist).filter(function (k) {
+      return state.hist[k] && state.hist[k].zt != null;
+    }).sort();
+    if (ks.length) return ks[ks.length - 1];
+    /* 一条历史都没有时，周末别写到今天这个空键上，退到最近的周五 */
+    var d = new Date(now.getTime());
+    while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1);
+    return ymdOf(d);
+  }
+
+  /* 最新交易日 vs 上一交易日的两市成交额对比
+   * 只用「日线里最后两根」，所以周末、节假日打开也照样显示「最近一个交易日 vs 前一日」，
+   * 不会出现「今天没成交额」的空窗。 */
+  function amtCompare() {
+    var m = state.amt;
+    if (!m) return null;
+    var ks = Object.keys(m).filter(function (k) { return isFinite(m[k]) && m[k] > 0; }).sort();
+    if (ks.length < 2) return null;
+    var curD = ks[ks.length - 1], prevD = ks[ks.length - 2];
+    var cur = m[curD], prev = m[prevD];
+    var diff = cur - prev;
+    var pct = prev > 0 ? diff / prev * 100 : null;
+    /* 放量缩量的判定用相对幅度，不用绝对值：成交额本身有季节性（月末、节前都偏低） */
+    var tag = null, tone = '';
+    if (pct !== null) {
+      if (pct >= 10) { tag = '大幅放量'; tone = 'up'; }
+      else if (pct >= 3) { tag = '放量'; tone = 'up'; }
+      else if (pct <= -10) { tag = '大幅缩量'; tone = 'down'; }
+      else if (pct <= -3) { tag = '缩量'; tone = 'down'; }
+      else { tag = '平量'; tone = ''; }
+    }
+    return { cur: cur, prev: prev, diff: diff, pct: pct, tag: tag, tone: tone, d: curD, prevD: prevD };
+  }
+
   /* 板块名对齐（关键）：涨停池返回的 hybk 被东财截断到 4 个字，
    * 出现的是「电子化学」「汽车零部」「农产品加」，而板块表里是全名。
    * 所以先用「去 ⅠⅡⅢ 后缀后完全相等」，再退到「板块名以这 4 字开头」取最短的一个
@@ -258,11 +519,14 @@
         var zt = rs[0], dt = rs[1], zb = rs[2];
         /* 节假日/超出可回溯范围会返回 tc=0 或 null —— 不写入缓存，下次也不会再问同一句 */
         if (zt && zt.tc > 0) {
+          var keep = state.hist[d] || {};
           state.hist[d] = {
             zt: zt.tc,
             dt: dt ? dt.tc : null,
             zb: zb ? zb.tc : null,
-            lb: (zt.list && zt.list.length) ? num(zt.list[0].lbc, null) : null
+            lb: (zt.list && zt.list.length) ? num(zt.list[0].lbc, null) : null,
+            /* 涨跌家数由 seed / 实时采样单独维护，这里必须原样带过去，否则一回补就冲掉 */
+            up: keep.up, down: keep.down, flat: keep.flat, bdSrc: keep.bdSrc
           };
           touched = true;
         }
@@ -313,16 +577,25 @@
   }
 
   function compute() {
-    var br = state.br || { up: 0, down: 0, flat: 0, total: 0 };
+    /* 涨跌家数的可信度：东财收盘后 f104/f105 会归零，此时 Live 会退化成一份几百只的代理样本
+     * （br.proxy=true，total 只有 800 多），拿它算「1.3% 上涨」会得出完全错误的宽度分。
+     * 两市正常在 5000 家以上，低于 3000 一律当没有，让宽度维度显示「—」而不是假数字。 */
+    var brOk = !!(state.br && (num(state.br.up, 0) + num(state.br.down, 0)) >= 3000);
+    var br = brOk ? state.br : { up: 0, down: 0, flat: 0, total: 0 };
     var ztN = state.zt ? state.zt.tc : null;
     var dtN = state.dt ? state.dt.tc : null;
     var zbN = state.zb ? state.zb.tc : null;
     var lb = maxBoard(state.zt);
     var zbRate = (ztN !== null && zbN !== null && (ztN + zbN) > 0) ? zbN / (ztN + zbN) : null;
-    var aw = amtWan();
-    var amtYi = aw ? aw / 10000 : null;   // 万元 → 亿元
+    /* 成交额优先用「两综指日线」口径（当日与昨日同源，能算放量缩量）；
+     * 日线还没回来时退回首页 QUOTES 的实时值，至少有个数。 */
+    var amt = amtCompare();
+    var amtYi = amt ? amt.cur : (function () {
+      var aw = amtWan();
+      return aw ? aw / 10000 : null;
+    })();
 
-    var upRatio = (br.up + br.down) > 0 ? br.up / (br.up + br.down) : null;
+    var upRatio = (brOk && (br.up + br.down) > 0) ? br.up / (br.up + br.down) : null;
 
     /* 五维：每一项都是 0~满分 的线性/分段映射，锚点写在注释里方便校准 */
     var dims = [];
@@ -373,7 +646,7 @@
     return {
       br: br, ztN: ztN, dtN: dtN, zbN: zbN, lb: lb, zbRate: zbRate,
       dtMax: dtMax,
-      amtYi: amtYi, amtWan: aw, upRatio: upRatio, dims: dims, score: score,
+      amtYi: amtYi, amt: amt, upRatio: upRatio, brOk: brOk, dims: dims, score: score,
       missing: dims.filter(function (d) { return d.val === null; }).map(function (d) { return d.name; })
     };
   }
@@ -428,50 +701,107 @@
     return { name: name, tone: tone, pos: pos, posTone: posTone, dir: dir, dirTone: dirTone, note: note, advice: advice };
   }
 
-  /* ------------------------------ 图表：近 20 日涨停/跌停 ------------------------------ */
+  /* ------------------------ 图表：涨停/跌停 + 涨跌家数 ------------------------
+   * 上下两段共用一条时间轴：
+   *   上段 = 涨停(红，向上) / 跌停(绿，向下) 家数 + 最高连板折线
+   *   下段 = 每个交易日的涨跌家数（100% 堆叠：红=上涨，绿=下跌，灰=平盘），
+   *          柱子上方标上涨家数、下方标下跌家数，柱体高度比例就是当天的赚钱面。
+   * 涨跌家数：历史段来自 breadth_seed.json（脚本按沪深全A日线逐日统计，口径≈通达信 880005），
+   * 当日由东财宽度接口实时给；两边都没有的日子画一条浅灰短线占位。 */
   function chart(days) {
     if (!days.length) return '<div class="sent-empty">历史数据回补中，稍后自动刷新</div>';
-    var W = 760, H = 200, padL = 30, padR = 12, padT = 12, padB = 24;
+    var W = 760, padL = 30, padR = 12, padT = 12, padB = 36;
+    var mainH = 124, bandGap = 18, bandH = 46;
     var n = days.length;
+
+    /* 一天涨跌家数都没有时，不留那条空带子 */
+    var hasBreadth = false;
+    for (var bi = 0; bi < days.length; bi++) {
+      var bd0 = days[bi];
+      if (bd0.up != null && bd0.down != null && (bd0.up + bd0.down) > 0) { hasBreadth = true; break; }
+    }
+    var H = padT + mainH + (hasBreadth ? bandGap + bandH : 0) + padB;
+
     var maxUp = Math.max(10, Math.max.apply(null, days.map(function (d) { return d.zt || 0; })));
     var maxDn = Math.max(5, Math.max.apply(null, days.map(function (d) { return d.dt || 0; })));
     var maxLb = Math.max(3, Math.max.apply(null, days.map(function (d) { return d.lb || 0; })));
-    var innerH = H - padT - padB;
-    var base = padT + innerH * 0.70;
-    var upH = base - padT, dnH = (H - padB) - base;
+    var mainTop = padT, mainBottom = padT + mainH;
+    var base = mainTop + mainH * 0.70;
+    var upH = base - mainTop, dnH = mainBottom - base;
+    var bandTop = mainBottom + bandGap, bandBottom = bandTop + bandH;
     var slot = (W - padL - padR) / n;
     var bw = Math.max(4, Math.min(15, slot * 0.56));
 
-    var s = '<svg class="sent-svg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" aria-label="近 ' + n + ' 个交易日涨停跌停家数与最高连板">';
-    /* 横向网格：只画涨停侧 2 条 + 跌停侧 1 条，避免糊成一片 */
+    var s = '<svg class="sent-svg' + (hasBreadth ? ' with-bd' : '') + '" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" aria-label="近 ' + n + ' 个交易日涨停跌停家数、最高连板与涨跌家数">';
+
+    /* 横向网格：只画涨停侧 2 条，避免糊成一片 */
     [0.5, 1].forEach(function (k) {
       var y = base - upH * k;
       s += '<line x1="' + padL + '" y1="' + y.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + y.toFixed(1) + '" stroke="#eef0f3" stroke-width="1"/>';
       s += '<text x="' + (padL - 6) + '" y="' + (y + 3).toFixed(1) + '" text-anchor="end" font-size="9" fill="#adb5bd">' + Math.round(maxUp * k) + '</text>';
     });
+    /* 零轴：涨停/跌停的分界，同时是涨停家数的 0 线 */
     s += '<line x1="' + padL + '" y1="' + base.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + base.toFixed(1) + '" stroke="#dee2e6" stroke-width="1"/>';
+
+    /* 涨跌家数带的分隔与标注 */
+    if (hasBreadth) {
+      s += '<line x1="' + padL + '" y1="' + (bandTop - bandGap / 2).toFixed(1) + '" x2="' + (W - padR) + '" y2="' + (bandTop - bandGap / 2).toFixed(1) + '" stroke="#f1f3f5" stroke-width="1"/>';
+      /* 50% 中位线：柱子的红绿分界越靠上 = 当天上涨家数越多 */
+      var midY = bandTop + bandH / 2;
+      s += '<line x1="' + padL + '" y1="' + midY.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + midY.toFixed(1) + '" stroke="#e9ecef" stroke-width="0.8" stroke-dasharray="2 3"/>';
+    }
 
     var linePts = [];
     days.forEach(function (d, i) {
       var x = padL + slot * i + (slot - bw) / 2;
+      var cx = padL + slot * i + slot / 2;
       var zt = d.zt || 0, dt = d.dt || 0, lb = d.lb;
+
+      /* 涨停柱（向上） */
       if (zt > 0) {
         var h1 = Math.max(1, upH * (zt / maxUp));
         s += '<rect x="' + x.toFixed(1) + '" y="' + (base - h1).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + h1.toFixed(1) + '" rx="1" fill="#e03131" opacity="0.82"/>';
       }
+      /* 跌停柱（向下） */
       if (dt > 0) {
         var h2 = Math.max(1, dnH * (dt / maxDn));
         s += '<rect x="' + x.toFixed(1) + '" y="' + base.toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + h2.toFixed(1) + '" rx="1" fill="#2f9e44" opacity="0.72"/>';
       }
+      /* 最高连板折线（只取点位，最后统一画） */
       if (lb) {
         var ly = base - upH * (lb / maxLb) * 0.92;
-        linePts.push([padL + slot * i + slot / 2, ly]);
+        linePts.push([cx, ly]);
       }
+
+      /* 涨跌家数 100% 堆叠条 + 上下数字 */
+      if (hasBreadth) {
+        var up = num(d.up, -1), dn = num(d.down, -1), fl = num(d.flat, 0);
+        if (up >= 0 && dn >= 0 && (up + dn) > 0) {
+          var tot = up + dn + (fl > 0 ? fl : 0);
+          var hu = bandH * up / tot;
+          var hf = fl > 0 ? bandH * fl / tot : 0;
+          var hd = bandH - hu - hf;
+          s += '<rect x="' + x.toFixed(1) + '" y="' + bandTop.toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + hu.toFixed(1) + '" fill="#e03131" opacity="0.62"/>';
+          if (hf > 0) s += '<rect x="' + x.toFixed(1) + '" y="' + (bandTop + hu).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + hf.toFixed(1) + '" fill="#dee2e6"/>';
+          s += '<rect x="' + x.toFixed(1) + '" y="' + (bandBottom - hd).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + hd.toFixed(1) + '" fill="#2f9e44" opacity="0.62"/>';
+          /* 数字：上涨标在柱子上方、下跌标在下方，都是纯数字，不带单位省宽度 */
+          if (bw >= 5) {
+            s += '<text x="' + cx.toFixed(1) + '" y="' + (bandTop - 3).toFixed(1) + '" text-anchor="middle" class="bd-num" font-size="8.5" font-weight="600" fill="#c92a2a">' + up + '</text>';
+            s += '<text x="' + cx.toFixed(1) + '" y="' + (bandBottom + 9).toFixed(1) + '" text-anchor="middle" class="bd-num" font-size="8.5" font-weight="600" fill="#2b8a3e">' + dn + '</text>';
+          }
+        } else {
+          /* 没采到：一条浅灰短线，明确表示「这天没有数据」而不是 0 家 */
+          s += '<rect x="' + x.toFixed(1) + '" y="' + (bandTop + bandH / 2 - 1).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="2" fill="#e9ecef"/>';
+        }
+      }
+
+      /* 日期轴：首尾 + 每 1/5 一格 */
       if (i === 0 || i === n - 1 || i % Math.ceil(n / 5) === 0) {
-        s += '<text x="' + (padL + slot * i + slot / 2).toFixed(1) + '" y="' + (H - 8) + '" text-anchor="middle" font-size="9" fill="#adb5bd">'
+        s += '<text x="' + cx.toFixed(1) + '" y="' + (H - 8) + '" text-anchor="middle" font-size="9" fill="#adb5bd">'
           + d.d.slice(4, 6) + '-' + d.d.slice(6, 8) + '</text>';
       }
     });
+
     if (linePts.length > 1) {
       s += '<polyline points="' + linePts.map(function (p) { return p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' ')
         + '" fill="none" stroke="#f08c00" stroke-width="1.8" stroke-linejoin="round" opacity="0.9"/>';
@@ -487,14 +817,15 @@
     var days = recentDays(BACKFILL).map(function (d) {
       var h = state.hist[d];
       if (!h) return null;
-      if (h.zt === null || h.zt === undefined) return null;
-      return { d: d, zt: h.zt, dt: h.dt, zb: h.zb, lb: h.lb };
+      /* 涨停池与涨跌家数各有各的来源：只要两者之一有数据，这根柱子就该画出来 */
+      if (h.zt == null && h.up == null) return null;
+      return { d: d, zt: h.zt, dt: h.dt, zb: h.zb, lb: h.lb, up: h.up, down: h.down, flat: h.flat, bdSrc: h.bdSrc };
     }).filter(Boolean);
     return days.reverse();
   }
 
-  function kpi(label, value, sub, tone) {
-    return '<div class="sent-kpi">'
+  function kpi(label, value, sub, tone, tip) {
+    return '<div class="sent-kpi"' + (tip ? ' title="' + esc(tip) + '"' : '') + '>'
       + '<span class="sent-kpi-label">' + esc(label) + '</span>'
       + '<b class="sent-kpi-val ' + (tone || '') + '">' + value + '</b>'
       + '<span class="sent-kpi-sub">' + (sub || '&nbsp;') + '</span>'
@@ -660,10 +991,12 @@
 
     items.push({
       t: '赚钱面',
-      v: c.br.up + ' / ' + c.br.down,
+      v: c.brOk ? (c.br.up + ' / ' + c.br.down) : '—',
       s: c.upRatio === null ? '缺数据' : (c.upRatio > 0.6 ? '普涨' : c.upRatio > 0.4 ? '分化' : '普跌'),
       tone: c.upRatio === null ? 'mute' : (c.upRatio > 0.6 ? 'up' : c.upRatio > 0.4 ? 'mute' : 'down'),
-      d: '上涨 / 下跌家数，覆盖沪深 ' + c.br.total + ' 只'
+      d: c.brOk
+        ? ('上涨 / 下跌家数，覆盖沪深 ' + c.br.total + ' 只')
+        : '非交易时段东财只回部分样本，涨跌家数暂不可用，不参与温度计算'
     });
 
     return items.map(function (x) {
@@ -683,6 +1016,13 @@
     var yday = state.hist[recentDays(3)[1]] || null;
     var st = stageOf(c, yday);
     var days = histDays();
+    /* 有没有任何一天的涨跌家数（决定要不要画下带、图例要不要列它） */
+    var hasBreadth = days.some(function (d) { return d.up != null && d.down != null && (d.up + d.down) > 0; });
+    /* 最新一天有家数的记录，用来在图注里直接给一个具体数字（窄屏会把柱上数字隐掉） */
+    var lastBr = null;
+    for (var li = days.length - 1; li >= 0; li--) {
+      if (days[li].up != null && days[li].down != null && (days[li].up + days[li].down) > 0) { lastBr = days[li]; break; }
+    }
 
     var now = new Date();
     var hmNow = pad2(now.getHours()) + ':' + pad2(now.getMinutes());
@@ -738,6 +1078,31 @@
       ? ('红 ' + prem.up + ' / 绿 ' + prem.down + ' · 晋级 ' + prem.promote + '/' + (prem.base || prem.n))
       : '昨日涨停池未取到';
 
+    /* 成交额：主值 + 「较前日放量/缩量」。对比取日线最后两根，
+     * 所以周末打开显示的是「最近一个交易日 vs 上一交易日」，不会出现空窗；
+     * 日线还没切到当天时（盘中有时会滞后），标签上补一个日期，避免误读成今天。 */
+    var A = c.amt;
+    var fmtYi = function (v) { return v >= 10000 ? (v / 10000).toFixed(2) + ' 万亿' : v.toFixed(0) + ' 亿'; };
+    var todayK = ymdOf(new Date());
+    var amtLabel = '两市成交额', amtMain, amtSub, amtTip;
+    if (A) {
+      var dv = Math.abs(A.diff);
+      amtMain = fmtYi(A.cur);
+      amtSub = '较前日 ' + (A.diff >= 0 ? '+' : '-') + fmtYi(dv)
+        + ' · ' + (A.pct >= 0 ? '+' : '') + A.pct.toFixed(1) + '% ' + A.tag;
+      amtTip = '基准 ' + A.d + ' ' + fmtYi(A.cur)
+        + ' vs 前一日 ' + A.prevD + ' ' + fmtYi(A.prev)
+        + '（口径：上证综指 + 深证综指成交额之和）';
+      if (A.d !== todayK) amtLabel = '两市成交额 · ' + A.d.slice(4, 6) + '/' + A.d.slice(6, 8);
+    } else if (c.amtYi !== null) {
+      amtMain = fmtYi(c.amtYi);
+      amtSub = c.amtYi >= 16000 ? '放量' : c.amtYi >= 10000 ? '正常' : '地量';
+      amtTip = '成交额日线未取到，这里退回首页实时值，暂无法与前日对比';
+    } else {
+      amtMain = '—'; amtSub = '行情未取到'; amtTip = '行情接口未返回成交额';
+    }
+    var amtTone = A ? A.tone : (c.amtYi === null ? '' : (c.amtYi >= 16000 ? 'up' : c.amtYi < 8000 ? 'down' : ''));
+
     box.innerHTML = ''
       /* ---------- 第一屏：温度 + 阶段 ---------- */
       + '<div class="sent-hero">'
@@ -751,9 +1116,17 @@
       +     '</div>'
       +     '<div class="sent-dims">' + dimHtml + '</div>'
       +     missing
-      +     '<div class="sent-chart-head"><span>涨停 / 跌停 · 近 ' + BACKFILL + ' 个交易日</span>'
-      +       '<span class="sent-legend"><i class="up"></i>涨停<i class="down"></i>跌停<i class="line"></i>最高连板</span></div>'
+      +     '<div class="sent-chart-head"><span>涨停 / 跌停 / 涨跌家数 · 近 ' + BACKFILL + ' 个交易日</span>'
+      +       '<span class="sent-legend"><i class="up"></i>涨停<i class="down"></i>跌停<i class="line"></i>最高连板'
+      +       (hasBreadth ? '<i class="bd"></i>涨跌家数(880005口径)' : '') + '</span></div>'
       +     '<div class="sent-chart">' + chart(days) + '</div>'
+      +     '<p class="sent-chart-tip">' + (hasBreadth
+              ? (lastBr
+                  ? '最新 ' + lastBr.d.slice(4, 6) + '-' + lastBr.d.slice(6, 8) + '：上涨 ' + lastBr.up + ' / 下跌 ' + lastBr.down
+                    + '（上涨占比 ' + (lastBr.up / (lastBr.up + lastBr.down) * 100).toFixed(1) + '%）· '
+                  : '')
+                + '下带为沪深全A涨跌家数（口径同通达信 880005），红=上涨、绿=下跌，比例即当天赚钱面；灰色短线表示那天没有数据。'
+              : '涨跌家数历史由脚本按全A日线逐日统计后随站点分发（口径同通达信 880005），文件缺失时会退回当日实时采集累积。') + '</p>'
       +   '</div>'
       +   '<aside class="sent-stage">'
       +     '<div class="sent-stage-head">阶段判定 · 位置 · 方向</div>'
@@ -763,7 +1136,7 @@
       +     '<ul class="sent-stage-list">'
       +       '<li>涨停 <b class="up">' + (c.ztN === null ? '—' : c.ztN) + '</b> 家 / 跌停 <b class="down">' + (c.dtN === null ? '—' : c.dtN) + '</b> 家</li>'
       +       '<li>最高 <b>' + (c.lb === null ? '—' : c.lb) + '</b> 板 · 炸板率 <b>' + (c.zbRate === null ? '—' : (c.zbRate * 100).toFixed(0) + '%') + '</b></li>'
-      +       '<li>上涨 <b class="up">' + c.br.up + '</b> / 下跌 <b class="down">' + c.br.down + '</b></li>'
+      +       '<li>上涨 <b class="up">' + (c.brOk ? c.br.up : '—') + '</b> / 下跌 <b class="down">' + (c.brOk ? c.br.down : '—') + '</b></li>'
       +     '</ul>'
       +     whyHtml
       +     '<p class="sent-stage-foot">方向 = 今日与昨日「涨停家数 + 最高连板」的合力，不预测，只描述已经发生的变化。</p>'
@@ -779,9 +1152,8 @@
               '封板 ' + (c.ztN === null || c.zbN === null ? '—' : (100 - c.zbRate * 100).toFixed(0) + '%'),
               c.zbRate === null ? '' : (c.zbRate > 0.45 ? 'down' : c.zbRate > 0.3 ? '' : 'up'))
       +   kpi('昨日涨停溢价', premVal, premSub, premTone)
-      +   kpi('两市成交额', c.amtYi === null ? '—' : (c.amtYi >= 10000 ? (c.amtYi / 10000).toFixed(2) + ' 万亿' : c.amtYi.toFixed(0) + ' 亿'),
-              c.amtYi === null ? '行情未取到' : (c.amtYi >= 16000 ? '放量' : c.amtYi >= 10000 ? '正常' : '地量'),
-              c.amtYi === null ? '' : (c.amtYi >= 16000 ? 'up' : c.amtYi < 8000 ? 'down' : ''))
+      +   kpi(amtLabel, amtMain,
+              '<span class="' + (amtTone || '') + '">' + amtSub + '</span>', '', amtTip)
       + '</div>'
 
       /* ---------- 第三屏：涨停梯队 + 跌停梯队 / 板块赚钱效应 ---------- */
@@ -816,7 +1188,12 @@
   /* ------------------------------ 对外接口 ------------------------------ */
   function feed(payload) {
     if (!payload) return;
-    if (payload.breadth) state.br = payload.breadth;
+    if (payload.breadth) {
+      state.br = payload.breadth;
+      /* 宽度是 Live 分几次推过来的，第一次可能还没数据；
+       * 这里每次都试一下，只要拿到像样的家数就落盘，不用等 loadAll 那一轮 */
+      sampleBreadth();
+    }
     if (payload.idxRows) state.idxRows = payload.idxRows;
     if (!state.loaded && !state.busy) {
       render();          // 先用宽度把骨架画出来，别让区块空着

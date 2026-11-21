@@ -910,3 +910,19 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .sent-sub-n.down{color:#2b8a3e}
 .sent-sub-hint{font-style:normal;color:#adb5bd;margin-left:8px;font-size:10.5px}
 .sent-tag.dn{background:#f0fbf2;color:#2b8a3e}
+
+/* ===== 成交额对比 + 涨跌家数带（2026-11-21） ===== */
+/* 成交额副行要放「较前日 +1234 亿 · +9.5% 放量」，窄屏放不下，允许折成两行 */
+.sent-kpi-sub{white-space:normal;line-height:1.5;overflow:hidden}
+.sent-kpi-sub span.up,.sent-kpi-sub span.down{font-weight:600}
+/* 图例加一项「涨跌家数」：红绿对半分的小方块，暗示它是比例条 */
+.sent-legend i.bd{background:linear-gradient(180deg,#e03131 0%,#e03131 50%,#2f9e44 50%,#2f9e44 100%)}
+.sent-legend{flex-wrap:wrap;row-gap:3px}
+/* 有涨跌家数带时图更高，靠 :has 精确切换，避免没数据时把图拉变形 */
+.sent-chart{height:200px}
+.sent-chart:has(svg.with-bd){height:248px}
+.sent-chart-tip{font-size:10.5px;color:#adb5bd;line-height:1.65;margin-top:6px}
+@media(max-width:640px){.sent-chart-tip{font-size:10px}}
+/* 窄屏柱上数字会糊在一起（viewBox 760 压到 320 宽，字号只剩 3~4px），
+   直接隐掉，改由图注里给出最新一天的具体家数 */
+@media(max-width:640px){.sent-svg .bd-num{display:none}}
